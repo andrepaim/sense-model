@@ -42,3 +42,11 @@ These are external data, compute, annotation and release deliverables. Having
 commands to run them does not mean the resulting accuracy or performance has
 been established. The current project is a tested development foundation, not a
 claim that improved English or production Portuguese weights already exist.
+
+## Annotation pilot tooling
+
+The optional `wsd annotate` local web interface and `wsd pilot collect/audit`
+commands are implemented. See `pilot-plan.md` and `pilot-guide.md`. Independent
+votes, Jev assistance/key entry, two-reviewer adjudication and canonical exports
+are tested. This adds the human review workflow; it does not supply 100 real
+reviewed examples per language or change the research prerequisites above.

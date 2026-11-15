@@ -9,7 +9,7 @@ import sys
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog="wsd", description="Prepare, train, evaluate, export and publish WSD models")
-    parser.add_argument("command", choices=["predict", "prepare", "train", "evaluate", "export", "publish", "teacher"])
+    parser.add_argument("command", choices=["predict", "prepare", "train", "evaluate", "export", "publish", "teacher", "annotate", "pilot"])
     if not argv or argv[0] in ("-h", "--help"):
         parser.print_help()
         return 0
@@ -47,7 +47,7 @@ def main(argv=None):
                 for result in model.predict(examples[i : i + args.batch_size]):
                     f.write(json.dumps(result, ensure_ascii=False) + "\n")
         return 0
-    module = {"prepare": "data", "teacher": "teacher"}.get(command, command)
+    module = {"prepare": "data", "teacher": "teacher", "annotate": "annotation_server"}.get(command, command)
     return importlib.import_module("wsd." + module).main(argv[1:])
 
 

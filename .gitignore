@@ -13,3 +13,9 @@ data/prepared/
 node_modules/
 build/
 dist/
+
+.annotation/
+pilot-workspace/
+
+web-tests/test-results/
+web-tests/playwright-report/

@@ -70,6 +70,25 @@ See [data preparation](docs/data.md), [training](docs/training.md),
 [implementation status](docs/status.md) and [Portuguese training smoke receipt](docs/portuguese-smoke.md). Configuration examples live in `configs`.
 Small authored smoke examples are tests of software mechanics, not a benchmark.
 
+## Build the evaluation pilot
+
+Run the local annotation interface:
+
+```sh
+uv run wsd annotate --open
+```
+
+It supports independent reviews, optional Jev assistance with a session-only API
+key field, disagreement adjudication, provenance and gold exports. No model is
+loaded by the review server. Default workspace: `.annotation/workspace.sqlite`.
+The target is 100 reviewed natural examples per language; authored demo records
+are explicitly excluded from real exports.
+
+Read the [full pilot plan](docs/pilot-plan.md), [operator guide](docs/pilot-guide.md),
+and [candidate collection workflow](docs/pilot-collection.md). `wsd pilot collect`
+prepares unlabeled candidates from local licensed documents and pinned inventories.
+Jev requests are explicit and billed by your provider. No API key belongs in Git.
+
 ## Portuguese
 
 The starting candidate is `jhu-clsp/mmBERT-small`, a multilingual ModernBERT.

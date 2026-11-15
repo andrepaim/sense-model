@@ -1,0 +1,6 @@
+recursive-include src/wsd/annotation_web *.html *.js *.css
+recursive-include docs *.md *.json *.png
+recursive-include scripts *.py
+recursive-include configs *.json
+recursive-include data/fixtures *.jsonl
+include uv.lock
