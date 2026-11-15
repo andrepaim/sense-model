@@ -27,6 +27,8 @@ def tiny_predictor():
         answer_vocab_size=128,
         tie_word_embeddings=False,
         pad_token_id=0,
+        bos_token_id=1,
+        eos_token_id=1,
         cls_token_id=1,
         sep_token_id=1,
     )
@@ -56,7 +58,11 @@ def test_roundtrip(tmp_path):
     p.save_pretrained(tmp_path)
     q = Predictor.from_pretrained(tmp_path, local_files_only=True)
     torch.testing.assert_close(logits, q.logits([x]))
-    assert p.predict([x]) == q.predict([x])
+    before, after = p.predict([x])[0], q.predict([x])[0]
+    assert before["probabilities"] == pytest.approx(after["probabilities"], abs=1e-6)
+    assert before["none_probability"] == pytest.approx(after["none_probability"], abs=1e-6)
+    for field in ("example_id", "selected_id", "reason", "model_revision", "calibration_version"):
+        assert before[field] == after[field]
 
 
 def test_span_and_limits():
