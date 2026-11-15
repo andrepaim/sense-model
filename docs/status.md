@@ -53,7 +53,8 @@ reviewed examples per language or change the research prerequisites above.
 
 ## Automatic dataset pipeline
 
-`wsd generate` / `scripts/generate_dataset.py` collect paper passages and use
+`wsd generate` / `scripts/generate_dataset.py` read a JSON manifest of local papers, request a configurable number of samples
+per paper (default 10), and use
 local Codex to choose dictionary-backed examples. `wsd label` /
 `scripts/label_dataset.py` run Jev first and escalate low-confidence cases to
 independent Codex judgment. The local annotation interface supports automatic

@@ -1,0 +1,16 @@
+{
+  "papers": [
+    {
+      "path": "papers/english-paper.pdf",
+      "language": "en",
+      "title": "Replace with your English paper title",
+      "area": "computer science"
+    },
+    {
+      "path": "papers/portuguese-paper.pdf",
+      "language": "pt",
+      "title": "Substitua pelo título do artigo em português",
+      "area": "education"
+    }
+  ]
+}

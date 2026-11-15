@@ -65,7 +65,7 @@ def test_generate_label_review_evaluate_contract(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    sources = tmp_path / "papers.jsonl"
+    sources = tmp_path / "papers.json"
     sources.write_text(
         json.dumps(
             {
@@ -77,6 +77,7 @@ def test_generate_label_review_evaluate_contract(tmp_path, monkeypatch):
             }
         )
     )
+    sources.write_text(json.dumps({"papers": [json.loads(sources.read_text())]}))
     config_path = tmp_path / "private" / "config.toml"
     config = load_config(config_path)
     config["jev"].update(api_key="fixture-not-a-real-key", max_retries=0)
@@ -87,14 +88,14 @@ def test_generate_label_review_evaluate_contract(tmp_path, monkeypatch):
         return {
             "detected_language": "en",
             "selections": [
-                {"pool_id": row["pool_id"], "difficulty": "easy", "reason": "Authored fixture context"}
-                for row in pool[:2]
+                {"pool_id": row["pool_id"], "difficulty": difficulty, "reason": "Authored fixture context"}
+                for row, difficulty in zip(pool, generation.difficulty_schedule(2))
             ],
         }
 
     monkeypatch.setattr(generation, "run_codex", generate)
     generated = tmp_path / "generated"
-    generation.generate(n=2, output=generated, lexicons={"en": inventory}, sources=sources, languages=("en",))
+    generation.generate(samples_per_paper=2, output=generated, lexicons={"en": inventory}, sources=sources)
     inputs = read_jsonl(generated / "samples.jsonl")
     assert len(inputs) == 2 and all(ex.gold_ids is None for ex in inputs)
 

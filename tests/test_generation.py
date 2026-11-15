@@ -1,6 +1,7 @@
 """Offline acquisition tests use quoted fixture text, not benchmark samples."""
 
 import json
+import urllib.request
 from collections import Counter
 
 import pytest
@@ -64,152 +65,17 @@ def choose_pool(prompt, schema, **kwargs):
     }
 
 
-def test_exact_unicode_offsets_pinned_candidates_bilingual_trim_and_resume(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path)
-    calls = []
-
-    def select(*args, **kwargs):
-        calls.append(kwargs)
-        return choose_pool(*args, **kwargs)
-
-    monkeypatch.setattr(g, "run_codex", select)
-    output = tmp_path / "run"
-    report = g.generate(n=17, output=output, lexicons=lexicons, sources=sources)
-    rows = [json.loads(line) for line in (output / "samples.jsonl").read_text().splitlines()]
-    assert report["accepted"] == 17
-    assert report["accepted_papers"] == 2
-    assert report["languages"] == {"en": 10, "pt": 7}
-    assert report["difficulties"] == {"easy": 10, "medium": 5, "hard": 2}
-    assert len(calls) == 2
-    assert all(call["model"] == g.DEFAULT_MODEL for call in calls)
-    for row in rows:
-        ex = Example.from_dict(row)
-        assert ex.gold_ids is None
-        assert [c.id for c in ex.candidates] == [ex.language + ":1", ex.language + ":2"]
-        metadata = ex.provenance["generation"]
-        text = (output / "cache" / (metadata["paper_id"].replace(":", "-") + ".txt")).read_text()
-        assert text[metadata["source_start"] : metadata["source_end"]] == ex.text
-        assert ex.text[ex.target.start : ex.target.end] == ex.target.text
-    before = (output / "samples.jsonl").read_bytes()
-    monkeypatch.setattr(g, "run_codex", lambda *a, **k: pytest.fail("resume must not call the model"))
-    g.generate(n=17, output=output, lexicons=lexicons, sources=sources, resume=True)
-    assert (output / "samples.jsonl").read_bytes() == before
-    with pytest.raises(g.GenerationError, match="changed"):
-        g.generate(n=18, output=output, lexicons=lexicons, sources=sources, resume=True)
-
-
-def test_partial_failure_persists_then_resumes_without_repeating_completed_paper(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path)
-    seen = []
-
-    def select(prompt, schema, **kwargs):
-        seen.append(prompt)
-        if "Fixture pt" in prompt:
-            raise g.CodexError("Requested model unavailable")
-        return choose_pool(prompt, schema, **kwargs)
-
-    output = tmp_path / "run"
-    monkeypatch.setattr(g, "run_codex", select)
-    with pytest.raises(g.CodexError, match="unavailable"):
-        g.generate(n=20, output=output, lexicons=lexicons, sources=sources)
-    report = json.loads((output / "generation-report.json").read_text())
-    assert report["status"] == "incomplete" and report["accepted"] == 10
-    seen.clear()
-    monkeypatch.setattr(g, "run_codex", lambda prompt, schema, **kw: seen.append(prompt) or choose_pool(prompt, schema))
-    report = g.generate(n=20, output=output, lexicons=lexicons, sources=sources, resume=True)
-    assert report["accepted"] == 20
-    assert len(seen) == 1 and "Fixture pt" in seen[0]
-
-
-def test_invalid_model_selection_retried_and_never_labels_or_invents(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
-    attempts = []
-
-    def invalid(prompt, schema, **kwargs):
-        attempts.append(prompt)
-        return {"detected_language": "en", "selections": [{"pool_id": "invented", "difficulty": "easy", "reason": ""}]}
-
-    monkeypatch.setattr(g, "run_codex", invalid)
-    output = tmp_path / "run"
-    with pytest.raises(g.GenerationError, match="Not enough usable"):
-        g.generate(n=1, output=output, lexicons=lexicons, sources=sources, languages=("en",))
-    assert len(attempts) == 3
-    assert not (output / "samples.jsonl").read_text()
-    events = [json.loads(line) for line in (output / "events.jsonl").read_text().splitlines()]
-    assert Counter(row["event"] for row in events)["selection_rejected"] == 3
-
-
-def test_default_scholar_discovery_uses_diverse_seeded_queries_and_cache(tmp_path, monkeypatch):
-    lexicons, explicit = fixture_inputs(tmp_path)
-    rows = g.read_sources(explicit)
-    calls = []
-
-    def search(query, language, key, **kwargs):
-        calls.append((query, language, key))
-        return [{**r, "discovery": "google-scholar-serpapi", "area": query} for r in rows if r["language"] == language]
-
-    monkeypatch.setattr(g, "scholar_search", search)
-    monkeypatch.setattr(g, "run_codex", choose_pool)
-    output = tmp_path / "run"
-    g.generate(n=20, output=output, lexicons=lexicons, scholar_api_key="private-credential")
-    assert {c[1] for c in calls} == {"en", "pt"}
-    assert len({c[0] for c in calls}) >= 6
-    assert "private-credential" not in "".join(p.read_text() for p in output.rglob("*.json*"))
-    calls.clear()
-    g.generate(n=20, output=output, lexicons=lexicons, scholar_api_key="private-credential", resume=True)
-    assert calls == []
-
-
-def test_scholar_search_parses_documented_pdf_resources_and_hides_credentials(monkeypatch):
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def read(self, size):
-            return json.dumps(
-                {
-                    "organic_results": [
-                        {
-                            "title": "Paper",
-                            "result_id": "r1",
-                            "link": "https://example.org/paper",
-                            "resources": [{"file_format": "PDF", "link": "https://example.org/p.pdf"}],
-                        }
-                    ]
-                }
-            ).encode()
-
-    requests = []
-    monkeypatch.setattr(g.urllib.request, "urlopen", lambda request, **kwargs: requests.append(request) or Response())
-    results = g.scholar_search("ecology", "pt", "secret-key")
-    query = g.urllib.parse.parse_qs(g.urllib.parse.urlsplit(requests[0].full_url).query)
-    assert query["engine"] == ["google_scholar"] and query["lr"] == ["lang_pt"]
-    assert results[0]["pdf_url"] == "https://example.org/p.pdf"
-    assert "secret-key" not in json.dumps(results)
-    monkeypatch.setattr(
-        g.urllib.request,
-        "urlopen",
-        lambda *a, **kw: (_ for _ in ()).throw(g.urllib.error.URLError("https://serpapi.com/?api_key=secret-key")),
-    )
-    with pytest.raises(g.GenerationError) as error:
-        g.scholar_search("ecology", "pt", "secret-key")
-    assert "secret-key" not in str(error.value)
-
-
 def test_manifest_hash_and_dictionary_language_guard(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    lexicons, sources = fixture_inputs(tmp_path)
     with pytest.raises(g.GenerationError, match="must be pt"):
         g.load_inventory(lexicons["en"], "pt")
     monkeypatch.setattr(g, "run_codex", choose_pool)
     output = tmp_path / "run"
-    g.generate(n=1, output=output, lexicons=lexicons, sources=sources, languages=("en",))
+    g.generate(samples_per_paper=1, output=output, lexicons=lexicons, sources=sources)
     with open(lexicons["en"], "a") as stream:
         stream.write("\n")
     with pytest.raises(g.GenerationError, match="changed"):
-        g.generate(n=1, output=output, lexicons=lexicons, sources=sources, languages=("en",), resume=True)
+        g.generate(samples_per_paper=1, output=output, lexicons=lexicons, sources=sources, resume=True)
 
 
 def test_pdf_extraction_external_binary_is_offline_and_uses_utf8(tmp_path, monkeypatch):
@@ -236,64 +102,6 @@ def test_source_pool_handles_repeated_unicode_occurrences_exactly():
         target = row["target"]
         assert row["text"][target["start"] : target["end"]] == "banco"
         assert text[row["source_start"] : row["source_end"]] == row["text"]
-
-
-def test_single_source_jsonl_and_cli_aliases(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
-    single = json.loads(sources.read_text())[0]
-    sources.write_text(json.dumps(single) + "\n")
-    assert len(g.read_sources(sources)) == 1
-    monkeypatch.setattr(g, "run_codex", choose_pool)
-    report = g.main(
-        [
-            "--samples",
-            "1",
-            "--language",
-            "en",
-            "--inventory",
-            lexicons["en"],
-            "--sources",
-            str(sources),
-            "--output",
-            str(tmp_path / "run"),
-        ]
-    )
-    assert report["accepted"] == 1
-
-
-def test_wrong_detected_language_rejected(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
-
-    def wrong(prompt, schema, **kwargs):
-        return {**choose_pool(prompt, schema), "detected_language": "pt"}
-
-    monkeypatch.setattr(g, "run_codex", wrong)
-    output = tmp_path / "run"
-    with pytest.raises(g.GenerationError, match="Not enough usable"):
-        g.generate(n=1, output=output, lexicons=lexicons, sources=sources, languages=("en",))
-    report = json.loads((output / "generation-report.json").read_text())
-    assert "different language" in report["failures"][0]["error"]
-    assert report["accepted"] == 0
-
-
-def test_area_balance_and_duplicate_paper_content(tmp_path, monkeypatch):
-    sources = [
-        {"language": "en", "area": area, "paper_id": f"{area}{index}"}
-        for area in ("science", "arts", "health")
-        for index in range(4)
-    ]
-    balanced = g.balance_sources(sources, 42)
-    assert len({s["area"] for s in balanced[:3]}) == 3
-    lexicons, manifest = fixture_inputs(tmp_path, languages=("en",), copies=3)
-    sources = json.loads(manifest.read_text())
-    (tmp_path / sources[1]["path"]).write_bytes((tmp_path / sources[0]["path"]).read_bytes())
-    manifest.write_text(json.dumps(sources))
-    monkeypatch.setattr(g, "run_codex", choose_pool)
-    with pytest.raises(g.GenerationError, match="Not enough usable"):
-        g.generate(n=30, output=tmp_path / "run", lexicons=lexicons, sources=manifest, languages=("en",))
-    report = json.loads((tmp_path / "run" / "generation-report.json").read_text())
-    assert report["accepted"] == 20
-    assert any("Duplicate" in f["error"] for f in report["failures"])
 
 
 def test_inventory_pools_all_pos_deduplicates_ids_and_rejects_conflicts(tmp_path):
@@ -334,10 +142,10 @@ def test_inventory_pools_all_pos_deduplicates_ids_and_rejects_conflicts(tmp_path
 
 @pytest.mark.parametrize("change", ["run_id", "language", "candidate", "passage", "text_cache", "metadata", "manifest"])
 def test_resume_revalidates_batches_without_overwriting_existing_exports(tmp_path, monkeypatch, change):
-    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    lexicons, sources = fixture_inputs(tmp_path)
     output = tmp_path / "run"
     monkeypatch.setattr(g, "run_codex", choose_pool)
-    g.generate(n=1, output=output, lexicons=lexicons, sources=sources, languages=("en",))
+    g.generate(samples_per_paper=1, output=output, lexicons=lexicons, sources=sources)
     slot_path = output / "cache" / "slot-000000.json"
     batch = json.loads(slot_path.read_text())
     if change == "run_id":
@@ -365,74 +173,8 @@ def test_resume_revalidates_batches_without_overwriting_existing_exports(tmp_pat
     before = {name: (output / name).read_bytes() for name in names}
     monkeypatch.setattr(g, "run_codex", lambda *a, **kw: pytest.fail("invalid cache must fail before model calls"))
     with pytest.raises(g.GenerationError, match="Resume"):
-        g.generate(n=1, output=output, lexicons=lexicons, sources=sources, languages=("en",), resume=True)
+        g.generate(samples_per_paper=1, output=output, lexicons=lexicons, sources=sources, resume=True)
     assert {name: (output / name).read_bytes() for name in names} == before
-
-
-def test_resume_requires_manifest_and_original_discovery_plan(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
-    plan = g.read_sources(sources)
-    monkeypatch.setattr(g, "discover_sources", lambda *a, **kw: plan)
-    monkeypatch.setattr(g, "run_codex", choose_pool)
-    output = tmp_path / "run"
-    g.generate(n=1, output=output, lexicons=lexicons, languages=("en",))
-    before = (output / "samples.jsonl").read_bytes()
-    discovery_path = output / "cache" / "discovery.json"
-    discovery = discovery_path.read_bytes()
-    discovery_path.unlink()
-    monkeypatch.setattr(
-        g, "discover_sources", lambda *a, **kw: pytest.fail("missing discovery must not silently search again")
-    )
-    with pytest.raises(g.ResumeError, match="discovery plan is missing"):
-        g.generate(n=1, output=output, lexicons=lexicons, languages=("en",), resume=True)
-    discovery_path.write_bytes(discovery)
-    (output / "manifest.json").unlink()
-    with pytest.raises(g.ResumeError, match="original manifest"):
-        g.generate(n=1, output=output, lexicons=lexicons, languages=("en",), resume=True)
-    assert (output / "samples.jsonl").read_bytes() == before
-
-
-def test_remote_pdf_download_resume_raw_hash_and_redirect_scheme_guards(tmp_path, monkeypatch):
-    lexicons, manifest = fixture_inputs(tmp_path, languages=("en",))
-    manifest.write_text(
-        json.dumps([{"title": "Fixture en remote", "language": "en", "pdf_url": "https://example.invalid/p.pdf"}])
-    )
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def read(self, size):
-            return b"%PDF-offline-fixture"
-
-    class Opener:
-        def open(self, request, timeout):
-            return Response()
-
-    monkeypatch.setattr(g.urllib.request, "build_opener", lambda handler: Opener())
-    monkeypatch.setattr(
-        g, "extract_pdf", lambda path: "An authentic bank passage with enough words to select an exact occurrence."
-    )
-    monkeypatch.setattr(g, "run_codex", choose_pool)
-    output = tmp_path / "run"
-    g.generate(n=1, output=output, lexicons=lexicons, sources=manifest, languages=("en",))
-    pdf = next((output / "cache").glob("*.pdf"))
-    pdf.write_bytes(b"%PDF-changed-fixture")
-    before = (output / "samples.jsonl").read_bytes()
-    with pytest.raises(g.ResumeError, match="validation failed"):
-        g.generate(n=1, output=output, lexicons=lexicons, sources=manifest, languages=("en",), resume=True)
-    assert (output / "samples.jsonl").read_bytes() == before
-    handler = g.HttpPdfRedirects()
-    request = g.urllib.request.Request("https://example.invalid/p.pdf")
-    for url in ("file:///private.pdf", "ftp://example.invalid/p.pdf"):
-        with pytest.raises(g.GenerationError, match="redirect must use"):
-            handler.redirect_request(request, None, 302, "", {}, url)
-    assert handler.redirect_request(request, None, 302, "", {}, "https://example.invalid/new.pdf").full_url.endswith(
-        "new.pdf"
-    )
 
 
 def test_selection_schema_has_exact_count_candidates_and_source_audit_metadata(tmp_path, monkeypatch):
@@ -452,7 +194,7 @@ def test_selection_schema_has_exact_count_candidates_and_source_audit_metadata(t
 
     monkeypatch.setattr(g, "run_codex", select)
     output = tmp_path / "run"
-    g.generate(n=1, output=output, lexicons=lexicons, sources=manifest, languages=("en",))
+    g.generate(samples_per_paper=1, output=output, lexicons=lexicons, sources=manifest)
     row = json.loads((output / "samples.jsonl").read_text())
     p = row["provenance"]
     assert p["source_url"] == "https://example.org/paper"
@@ -492,22 +234,323 @@ def test_pypdf_fallback_uses_bounded_subprocess_and_preserves_interrupts(tmp_pat
         g.extract_pdf(path)
 
 
-def test_missing_earlier_slot_cannot_reuse_a_later_cached_paper(tmp_path, monkeypatch):
-    lexicons, sources = fixture_inputs(tmp_path, languages=("en",), copies=2)
+def test_every_paper_in_manifest_order_default_quota_unicode_and_resume(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, copies=2)
+    calls = []
+
+    def select(prompt, schema, **kwargs):
+        calls.append((prompt, kwargs))
+        return choose_pool(prompt, schema, **kwargs)
+
+    monkeypatch.setattr(g, "run_codex", select)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: pytest.fail("No network acquisition"))
     output = tmp_path / "run"
+    report = g.generate(output=output, lexicons=lexicons, sources=sources)
+    assert report["status"] == "complete"
+    assert report["requested"] == report["accepted"] == 40
+    assert report["accepted_papers"] == 4
+    assert report["languages"] == {"en": 20, "pt": 20}
+    assert report["difficulties"] == {"easy": 20, "medium": 12, "hard": 8}
+    papers = [json.loads(line) for line in (output / "papers.jsonl").read_text().splitlines()]
+    assert [row["title"] for row in papers] == [row["title"] for row in json.loads(sources.read_text())]
+    assert len(calls) == 4 and all(kw["model"] == g.DEFAULT_MODEL for _, kw in calls)
+    for line in (output / "samples.jsonl").read_text().splitlines():
+        ex = Example.from_dict(json.loads(line))
+        assert ex.gold_ids is None
+        assert [c.id for c in ex.candidates] == [ex.language + ":1", ex.language + ":2"]
+        metadata = ex.provenance["generation"]
+        source = next(paper for paper in papers if paper["paper_id"] == metadata["paper_id"])
+        text = g._exact_text(source["text_path"])
+        assert text[metadata["source_start"] : metadata["source_end"]] == ex.text
+        assert ex.text[ex.target.start : ex.target.end] == ex.target.text
+    before = (output / "samples.jsonl").read_bytes()
+    monkeypatch.setattr(g, "run_codex", lambda *a, **kw: pytest.fail("Completed papers must not call the model"))
+    report = g.generate(output=output, lexicons=lexicons, sources=sources, resume=True)
+    assert report["accepted"] == 40
+    assert (output / "samples.jsonl").read_bytes() == before
+    with pytest.raises(g.ResumeError, match="changed"):
+        g.generate(output=output, lexicons=lexicons, sources=sources, samples_per_paper=9, resume=True)
+
+
+@pytest.mark.parametrize(
+    "count,expected",
+    [
+        (1, {"easy": 1}),
+        (2, {"easy": 1, "medium": 1}),
+        (3, {"easy": 1, "medium": 1, "hard": 1}),
+        (7, {"easy": 4, "medium": 2, "hard": 1}),
+        (10, {"easy": 5, "medium": 3, "hard": 2}),
+        (13, {"easy": 6, "medium": 4, "hard": 3}),
+    ],
+)
+def test_difficulty_largest_remainder(count, expected):
+    assert Counter(g.difficulty_schedule(count)) == expected
+
+
+@pytest.mark.parametrize("count", [0, -1, 1.5, True])
+def test_invalid_quota_rejected(count):
+    with pytest.raises(g.GenerationError, match="positive integer"):
+        g.difficulty_schedule(count)
+
+
+def test_quota_above_default_pool_limit_and_too_few_targets(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    paper = tmp_path / json.loads(sources.read_text())[0]["path"]
+    paper.write_text(
+        "\n".join(f"Occurrence {i}: the bank offers authentic context for this research." for i in range(170))
+    )
     monkeypatch.setattr(g, "run_codex", choose_pool)
-    g.generate(n=20, output=output, lexicons=lexicons, sources=sources, languages=("en",))
-    slot_path = output / "cache" / "slot-000000.json"
-    first = json.loads(slot_path.read_text())["paper"]["paper_id"]
-    slot_path.unlink()
+    output = tmp_path / "run"
+    report = g.generate(sources=sources, output=output, lexicons=lexicons, samples_per_paper=165)
+    assert report["accepted"] == 165 and report["status"] == "complete"
+    monkeypatch.setattr(g, "run_codex", lambda *a, **kw: pytest.fail("Resume should not call model"))
+    assert (
+        g.generate(sources=sources, output=output, lexicons=lexicons, samples_per_paper=165, resume=True)["accepted"]
+        == 165
+    )
+    report = g.generate(sources=sources, output=tmp_path / "short", lexicons=lexicons, samples_per_paper=171)
+    assert report["status"] == "incomplete" and report["accepted"] == 0
+    assert "Only 170" in report["failures"][0]["error"]
+
+
+def test_failed_middle_paper_continues_and_resume_only_retries_failure(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",), copies=3)
+    calls = []
+
+    def select(prompt, schema, **kwargs):
+        calls.append(prompt)
+        if "Fixture en 1" in prompt:
+            raise g.CodexError("Requested model unavailable")
+        return choose_pool(prompt, schema, **kwargs)
+
+    output = tmp_path / "run"
+    monkeypatch.setattr(g, "run_codex", select)
+    report = g.generate(sources=sources, output=output, lexicons=lexicons)
+    assert report["status"] == "incomplete" and report["requested"] == 30 and report["accepted"] == 20
+    assert len(calls) == 3
+    assert report["failures"][0]["slot"] == 1
+    assert report["failures"][0]["status"] == "incomplete"
+    assert not (output / "cache/slot-000001.json").exists()
+    calls.clear()
+    monkeypatch.setattr(
+        g, "run_codex", lambda prompt, schema, **kw: calls.append(prompt) or choose_pool(prompt, schema)
+    )
+    report = g.generate(sources=sources, output=output, lexicons=lexicons, resume=True)
+    assert report["status"] == "complete" and report["accepted"] == 30 and not report["failures"]
+    assert len(calls) == 1 and "Fixture en 1" in calls[0]
+    assert [json.loads(line)["slot"] for line in (output / "papers.jsonl").read_text().splitlines()] == [0, 1, 2]
+
+
+@pytest.mark.parametrize("wrong", ["selection", "language"])
+def test_invalid_selection_or_language_is_retried_without_fabrication(tmp_path, monkeypatch, wrong):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    attempts = []
+
+    def invalid(prompt, schema, **kwargs):
+        attempts.append(prompt)
+        if wrong == "language":
+            return {**choose_pool(prompt, schema), "detected_language": "pt"}
+        return {"detected_language": "en", "selections": [{"pool_id": "invented", "difficulty": "easy", "reason": ""}]}
+
+    monkeypatch.setattr(g, "run_codex", invalid)
+    output = tmp_path / "run"
+    report = g.generate(sources=sources, output=output, lexicons=lexicons, samples_per_paper=1)
+    assert report["status"] == "incomplete" and report["accepted"] == 0
+    assert len(attempts) == 3
+    assert not (output / "samples.jsonl").read_text()
+    events = [json.loads(line) for line in (output / "events.jsonl").read_text().splitlines()]
+    assert Counter(row["event"] for row in events)["selection_rejected"] == 3
+
+
+@pytest.mark.parametrize(
+    "defect,match",
+    [
+        ("missing", "does not exist"),
+        ("path", "Duplicate source path"),
+        ("content", "Duplicate paper content"),
+        ("remote", "local path"),
+        ("language", "English.*Portuguese"),
+    ],
+)
+def test_manifest_preflight_rejects_invalid_sources_before_model(tmp_path, monkeypatch, defect, match):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",), copies=2)
+    rows = json.loads(sources.read_text())
+    if defect == "missing":
+        rows[1]["path"] = "papers/missing.pdf"
+    elif defect == "path":
+        rows[1]["path"] = rows[0]["path"]
+    elif defect == "content":
+        (tmp_path / rows[1]["path"]).write_bytes((tmp_path / rows[0]["path"]).read_bytes())
+    elif defect == "remote":
+        del rows[1]["path"]
+        rows[1]["pdf_url"] = "https://example.invalid/p.pdf"
+    else:
+        del rows[1]["language"]
+    sources.write_text(json.dumps({"papers": rows}))
+    monkeypatch.setattr(g, "run_codex", lambda *a, **kw: pytest.fail("Invalid inputs must not call model"))
+    with pytest.raises(g.GenerationError, match=match):
+        g.generate(sources=sources, output=tmp_path / "run", lexicons=lexicons)
+    assert not (tmp_path / "run").exists()
+
+
+def test_manifest_relative_paths_optional_title_and_default_language(tmp_path):
+    folder = tmp_path / "papers"
+    folder.mkdir()
+    paper = folder / "source.txt"
+    paper.write_text("Authentic paper text.")
+    manifest = tmp_path / "papers.json"
+    manifest.write_text(json.dumps({"language": "en-US", "papers": [{"path": "papers/source.txt"}]}))
+    (row,) = g.read_sources(manifest)
+    assert row["path"] == str(paper.resolve())
+    assert row["title"] == "source" and row["language"] == "en"
+    assert row["input_sha256"] == g.file_sha256(paper)
+
+
+def test_cli_input_alias_inventory_inference_defaults_and_config(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",), copies=2)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "papers.json").write_bytes(sources.read_bytes())
+    monkeypatch.setattr(g, "run_codex", choose_pool)
+    report = g.main(["--inventory", lexicons["en"]])
+    assert report["accepted"] == 20
+    assert (tmp_path / "data/pilot/generated/samples.jsonl").exists()
+    report = g.main(
+        [
+            "--sources",
+            str(sources),
+            "--inventory",
+            lexicons["en"],
+            "--samples-per-paper",
+            "3",
+            "--output",
+            str(tmp_path / "custom"),
+        ]
+    )
+    assert report["accepted"] == 6 and report["difficulties"] == {"easy": 2, "medium": 2, "hard": 2}
+    monkeypatch.setattr(
+        g,
+        "load_config",
+        lambda *a: {
+            "generation": {"samples_per_paper": 2, "lexicon_en": lexicons["en"]},
+            "codex": {"model": "custom-model"},
+        },
+    )
+    report = g.main(["--input", str(sources), "--output", str(tmp_path / "configured")])
+    assert report["accepted"] == 4
+
+
+def test_cli_incomplete_exits_nonzero_after_saving_report(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    monkeypatch.setattr(g, "run_codex", lambda *a, **kw: (_ for _ in ()).throw(g.CodexError("Unavailable")))
+    output = tmp_path / "run"
+    with pytest.raises(SystemExit) as exc:
+        g.main(["--input", str(sources), "--inventory", lexicons["en"], "--output", str(output)])
+    assert exc.value.code == 1
+    assert json.loads((output / "generation-report.json").read_text())["status"] == "incomplete"
+
+
+def test_resume_requires_original_manifest_and_source_hash(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    monkeypatch.setattr(g, "run_codex", choose_pool)
+    output = tmp_path / "run"
+    g.generate(sources=sources, output=output, lexicons=lexicons)
+    before = (output / "samples.jsonl").read_bytes()
+    manifest = output / "manifest.json"
+    payload = manifest.read_bytes()
+    manifest.unlink()
+    with pytest.raises(g.ResumeError, match="original manifest"):
+        g.generate(sources=sources, output=output, lexicons=lexicons, resume=True)
+    manifest.write_bytes(payload)
+    paper = tmp_path / json.loads(sources.read_text())[0]["path"]
+    paper.write_text(paper.read_text() + " Changed.")
+    with pytest.raises(g.ResumeError, match="hashes changed"):
+        g.generate(sources=sources, output=output, lexicons=lexicons, resume=True)
+    assert (output / "samples.jsonl").read_bytes() == before
+
+
+def test_missing_earlier_checkpoint_never_substitutes_later_completed_paper(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",), copies=2)
+    monkeypatch.setattr(g, "run_codex", choose_pool)
+    output = tmp_path / "run"
+    g.generate(sources=sources, output=output, lexicons=lexicons)
+    (output / "cache/slot-000000.json").unlink()
+    first = g.read_sources(sources)[0]["paper_id"]
 
     def inaccessible(source, *args):
-        if source["paper_id"] == first:
-            raise g.GenerationError("First source unavailable")
-        pytest.fail("A later cached paper must remain reserved for its own slot")
+        assert source["paper_id"] == first
+        raise g.GenerationError("First source unavailable")
 
     monkeypatch.setattr(g, "acquire_source", inaccessible)
-    monkeypatch.setattr(g, "run_codex", lambda *a, **kw: pytest.fail("No unused source remains"))
-    with pytest.raises(g.GenerationError, match="Not enough usable"):
-        g.generate(n=20, output=output, lexicons=lexicons, sources=sources, languages=("en",), resume=True)
-    assert (output / "cache" / "slot-000001.json").exists()
+    monkeypatch.setattr(g, "run_codex", lambda *a, **kw: pytest.fail("No substitution allowed"))
+    report = g.generate(sources=sources, output=output, lexicons=lexicons, resume=True)
+    assert report["status"] == "incomplete" and report["accepted"] == 10
+    assert (output / "cache/slot-000001.json").exists()
+
+
+def test_failed_extraction_continues_to_next_listed_paper(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",), copies=2)
+    rows = json.loads(sources.read_text())
+    pdf = tmp_path / "corrupt.pdf"
+    pdf.write_bytes(b"%PDF-corrupt-fixture")
+    rows[0]["path"] = pdf.name
+    sources.write_text(json.dumps({"papers": rows}))
+    monkeypatch.setattr(g, "extract_pdf", lambda *a: (_ for _ in ()).throw(g.GenerationError("Unreadable PDF")))
+    monkeypatch.setattr(g, "run_codex", choose_pool)
+    report = g.generate(sources=sources, output=tmp_path / "run", lexicons=lexicons)
+    assert report["status"] == "incomplete" and report["accepted"] == 10
+    assert report["failures"][0]["slot"] == 0
+
+
+def test_duplicate_extracted_text_fails_without_substitution(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",), copies=2)
+    rows = json.loads(sources.read_text())
+    for index, row in enumerate(rows):
+        paper = tmp_path / f"paper-{index}.pdf"
+        paper.write_bytes(f"%PDF-distinct-fixture-{index}".encode())
+        row["path"] = paper.name
+    sources.write_text(json.dumps(rows))
+    monkeypatch.setattr(
+        g,
+        "extract_pdf",
+        lambda *a: "\n".join(
+            f"Occurrence {i}: the bank offers authentic context for this research." for i in range(12)
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(g, "run_codex", lambda *a, **kw: calls.append(1) or choose_pool(*a, **kw))
+    report = g.generate(sources=sources, output=tmp_path / "run", lexicons=lexicons)
+    assert report["status"] == "incomplete" and report["accepted"] == 10
+    assert len(calls) == 1 and "Duplicate extracted" in report["failures"][0]["error"]
+
+
+def test_text_fixture_keeps_original_unicode_and_crlf_offsets(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    paper = tmp_path / json.loads(sources.read_text())[0]["path"]
+    original = paper.read_text().replace("\n", "\r\n")
+    paper.write_bytes(original.encode("utf-8"))
+    monkeypatch.setattr(g, "run_codex", choose_pool)
+    output = tmp_path / "run"
+    g.generate(sources=sources, output=output, lexicons=lexicons)
+    (saved,) = (output / "cache").glob("paper-*.txt")
+    assert saved.read_bytes() == original.encode("utf-8")
+    g.generate(sources=sources, output=output, lexicons=lexicons, resume=True)
+
+
+def test_cli_config_input_and_output_paths(tmp_path, monkeypatch):
+    lexicons, sources = fixture_inputs(tmp_path, languages=("en",))
+    output = tmp_path / "configured-output"
+    monkeypatch.setattr(
+        g,
+        "load_config",
+        lambda *a: {
+            "generation": {
+                "input": str(sources),
+                "output": str(output),
+                "lexicon_en": lexicons["en"],
+                "samples_per_paper": 2,
+            }
+        },
+    )
+    monkeypatch.setattr(g, "run_codex", choose_pool)
+    assert g.main([])["accepted"] == 2
+    assert (output / "samples.jsonl").exists()

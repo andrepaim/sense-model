@@ -1,5 +1,19 @@
 # Automatic pilot verification — 2026-11-15
 
+## Local manifest update
+
+Generation now reads a local JSON manifest and accepts `--samples-per-paper`
+(default 10). The Scholar adapter and total-sample selection were removed.
+All **149 Python tests passed**, including 38 generation tests covering manifest
+order, per-paper quotas, partial failure/retry, source validation and checkpoint
+integrity. Ruff, lock, diff and package checks passed. The source package includes
+`papers.example.json` and the papers-folder guide, excluding local paper inputs.
+See [the generation guide](dataset-generation.md) for the current workflow.
+
+## Initial implementation receipt
+
+The following records the earlier automatic pipeline before this manifest update.
+
 This receipt records software behavior, not benchmark accuracy or dataset quality.
 The examples used in automated and live smoke checks are authored software fixtures.
 

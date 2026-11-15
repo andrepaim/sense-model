@@ -4,3 +4,5 @@ recursive-include scripts *.py
 recursive-include configs *.json
 recursive-include data/fixtures *.jsonl
 include uv.lock
+include papers.example.json
+include papers/README.md

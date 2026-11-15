@@ -177,7 +177,7 @@ def _integer(value, name, minimum=1, maximum=128):
 
 
 def label_dataset(
-    input_path="data/pilot/en/samples.jsonl",
+    input_path="data/pilot/generated/samples.jsonl",
     output_dir=None,
     *,
     judge_model=None,
@@ -481,7 +481,7 @@ def label_dataset(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", dest="input_path", default="data/pilot/en/samples.jsonl")
+    parser.add_argument("--input", dest="input_path", default="data/pilot/generated/samples.jsonl")
     parser.add_argument("--output", dest="output_dir")
     parser.add_argument("--judge-model")
     parser.add_argument("--confidence-threshold", type=float)

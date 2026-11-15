@@ -9,18 +9,18 @@ probability never substitutes for missing confidence.
 ```bash
 wsd config init
 # Edit ~/.config/sense-model/config.toml and set jev.api_key.
-wsd label --input data/pilot/en/samples.jsonl
+wsd label --input data/pilot/generated/samples.jsonl
 # Equivalent standalone entry point:
-.venv/bin/python scripts/label_dataset.py --input data/pilot/en/samples.jsonl
+.venv/bin/python scripts/label_dataset.py --input data/pilot/generated/samples.jsonl
 ```
 
 The input is ordinary `Example` JSONL with complete candidate definitions and
 Unicode code point offsets. With no flags, the input is
-`data/pilot/en/samples.jsonl` and output is its sibling `labeled/` directory.
+`data/pilot/generated/samples.jsonl` and output is its sibling `labeled/` directory.
 Use a new output directory for a new dataset version.
 
 ```bash
-wsd label --input data/pilot/en/samples.jsonl --output data/pilot/en/labeled \
+wsd label --input data/pilot/generated/samples.jsonl --output data/pilot/generated/labeled \
   --confidence-threshold 0.80 --jev-concurrency 4 --codex-concurrency 2 \
   --limit 100 --config ~/.config/sense-model/config.toml
 ```
@@ -123,9 +123,9 @@ Artifacts are written atomically after each completed provider call. Resume a
 partial run or reroute a finished run with:
 
 ```bash
-wsd label --input data/pilot/en/samples.jsonl --resume
-wsd label --input data/pilot/en/samples.jsonl --resume --confidence-threshold 0.90
-wsd label --input data/pilot/en/samples.jsonl --resume --retry-failed
+wsd label --input data/pilot/generated/samples.jsonl --resume
+wsd label --input data/pilot/generated/samples.jsonl --resume --confidence-threshold 0.90
+wsd label --input data/pilot/generated/samples.jsonl --resume --retry-failed
 ```
 
 Resume reuses successful decisions only when their content, prompt/schema,

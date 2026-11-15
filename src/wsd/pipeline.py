@@ -35,11 +35,10 @@ DEFAULTS = {
     },
     "codex": {"model": DEFAULT_MODEL, "concurrency": 2, "timeout_seconds": 180, "max_retries": 1},
     "generation": {
-        "samples": 1000,
+        "input": "papers.json",
+        "output": "data/pilot/generated",
         "samples_per_paper": 10,
-        "search_source": "google-scholar",
         "seed": 42,
-        "scholar_api_key": "",
         "lexicon_en": "",
         "lexicon_pt": "",
     },
@@ -95,7 +94,6 @@ def load_config(path=None) -> dict:
         {
             "api_key_env": config["jev"].get("api_key_env")
             or ("OPENROUTER_API_KEY" if config["jev"].get("provider") == "openrouter" else "TYPESAFE_API_KEY"),
-            "scholar_api_key_env": "SERPAPI_API_KEY",
         }
     )
     return config

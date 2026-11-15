@@ -9,16 +9,11 @@ import argparse
 import copy
 import importlib.util
 import json
-import math
-import os
 import random
 import re
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -35,39 +30,7 @@ from .pipeline import (
 )
 from .schema import Candidate, Example, Target
 
-VERSION = "paper-passages-v2"
-DIFFICULTIES = ["easy"] * 5 + ["medium"] * 3 + ["hard"] * 2
-AREAS = {
-    "en": [
-        "ecology biodiversity",
-        "economics markets",
-        "computer science networks",
-        "psychology cognition",
-        "materials science",
-        "public health",
-        "linguistics language",
-        "education learning",
-        "physics energy",
-        "history culture",
-        "geography climate",
-        "agriculture soil",
-    ],
-    "pt": [
-        "ecologia biodiversidade",
-        "economia mercados",
-        "computação redes",
-        "psicologia cognição",
-        "ciência materiais",
-        "saúde pública",
-        "linguística linguagem",
-        "educação aprendizagem",
-        "física energia",
-        "história cultura",
-        "geografia clima",
-        "agricultura solo",
-    ],
-}
-MAX_DOWNLOAD = 40 * 1024 * 1024
+VERSION = "paper-passages-v3"
 SELECTION_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -97,15 +60,6 @@ class GenerationError(ValueError):
 
 class ResumeError(GenerationError):
     """Reject an inconsistent checkpoint without replacing existing exports."""
-
-
-class HttpPdfRedirects(urllib.request.HTTPRedirectHandler):
-    """Keep the original HTTP(S)-only policy through every redirect hop."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if urllib.parse.urlsplit(newurl).scheme not in ("http", "https"):
-            raise GenerationError("PDF redirect must use HTTP or HTTPS.")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _exact_text(path):
@@ -163,134 +117,57 @@ def load_inventory(path, language):
 
 
 def read_sources(path):
-    """Read a JSON array/{papers: [...]} or JSONL; resolve paths beside manifest."""
+    """Read local papers in manifest order, resolving paths beside the JSON file."""
     path = Path(path).expanduser().resolve()
-    content = path.read_text(encoding="utf-8")
     try:
-        rows = json.loads(content)
-        rows = rows.get("papers", [rows]) if isinstance(rows, dict) else rows
-    except json.JSONDecodeError:
-        rows = [json.loads(line) for line in content.splitlines() if line.strip()]
-    if not isinstance(rows, list):
-        raise GenerationError("Source manifest must be an array, {papers: [...]}, or JSONL.")
-    sources = []
-    for row in rows:
-        if not isinstance(row, dict) or not row.get("title"):
-            raise GenerationError("Every source needs title and language plus path or pdf_url.")
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise GenerationError(f"Invalid source manifest JSON: {path}") from exc
+    default_language = manifest.get("language", "") if isinstance(manifest, dict) else ""
+    rows = manifest.get("papers") if isinstance(manifest, dict) else manifest
+    if not isinstance(rows, list) or not rows:
+        raise GenerationError("Source manifest must be a nonempty array or {papers: [...]}.")
+    sources, seen_paths, seen_inputs = [], set(), set()
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str) or not row["path"].strip():
+            raise GenerationError(f"Paper {index} needs a local path and language; remote downloads are not supported.")
         source = dict(row)
-        source["language"] = language_tag(source.get("language", ""))
+        source["language"] = language_tag(source.get("language", default_language))
+        local = Path(source["path"]).expanduser()
+        local = (path.parent / local).resolve() if not local.is_absolute() else local.resolve()
+        if not local.is_file():
+            raise GenerationError(f"Source does not exist: {local}")
+        if local.suffix.lower() not in (".pdf", ".txt", ".text"):
+            raise GenerationError(f"Source must be a local PDF or UTF-8 text file: {local}")
+        if local in seen_paths:
+            raise GenerationError(f"Duplicate source path in manifest: {local}")
+        input_hash = file_sha256(local)
+        if input_hash in seen_inputs:
+            raise GenerationError(f"Duplicate paper content in manifest: {local}")
+        seen_paths.add(local)
+        seen_inputs.add(input_hash)
+        source["path"] = str(local)
+        source["input_sha256"] = input_hash
+        source.setdefault("title", local.stem)
+        if not isinstance(source["title"], str) or not source["title"].strip():
+            raise GenerationError(f"Paper {index} title must be a nonempty string.")
         source.setdefault("area", "explicit source")
         source.setdefault("license", "unspecified; verify before redistribution")
-        if source.get("path"):
-            local = Path(source["path"]).expanduser()
-            local = (path.parent / local).resolve() if not local.is_absolute() else local.resolve()
-            if not local.is_file():
-                raise GenerationError(f"Source does not exist: {local}")
-            source["path"] = str(local)
-            source["input_sha256"] = file_sha256(local)
-        elif not source.get("pdf_url"):
-            raise GenerationError("Every source needs path or pdf_url.")
-        source["paper_id"] = (
-            "paper:" + fingerprint({k: source.get(k) for k in ("path", "pdf_url", "title", "language")})[:20]
-        )
+        source["paper_id"] = "paper:" + fingerprint({k: source[k] for k in ("path", "title", "language")})[:20]
         sources.append(source)
     return sources
 
 
-def scholar_search(query, language, api_key, *, start=0):
-    """Official SerpAPI Google Scholar engine; no direct Scholar scraping."""
-    params = {
-        "engine": "google_scholar",
-        "q": query,
-        "hl": language,
-        "lr": f"lang_{language}",
-        "num": 20,
-        "start": start,
-        "api_key": api_key,
-    }
-    url = "https://serpapi.com/search.json?" + urllib.parse.urlencode(params)
-    try:
-        request = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            body = response.read(4 * 1024 * 1024 + 1)
-        if len(body) > 4 * 1024 * 1024:
-            raise GenerationError("Scholar provider response exceeded the limit.")
-        result = json.loads(body)
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-        # Do not include exceptions: urllib errors may carry the credential-bearing URL.
-        raise GenerationError("Scholar search failed. Check SERPAPI_API_KEY, connection and provider quota.") from None
-    if "error" in result:
-        raise GenerationError("Scholar provider rejected the search. Check API key/quota in SerpAPI.")
-    papers = []
-    for row in result.get("organic_results", []):
-        pdf = next(
-            (
-                r.get("link")
-                for r in row.get("resources", [])
-                if r.get("file_format", "").upper() == "PDF" and r.get("link")
-            ),
-            None,
-        )
-        if not pdf:
-            continue
-        source = {
-            "title": row.get("title", "Untitled paper"),
-            "pdf_url": pdf,
-            "url": row.get("link"),
-            "language": language,
-            "area": query,
-            "discovery": "google-scholar-serpapi",
-            "scholar_query": query,
-            "scholar_result_id": row.get("result_id"),
-            "publication_info": row.get("publication_info", {}),
-            "license": "unspecified; verify before redistribution",
-        }
-        source["paper_id"] = "paper:" + fingerprint({"pdf_url": pdf})[:20]
-        papers.append(source)
-    return papers
-
-
-def discover_sources(count, languages, seed, api_key, log, custom_areas=None):
-    if not api_key:
-        raise GenerationError(
-            "Default Google Scholar discovery needs SERPAPI_API_KEY or "
-            "[generation].scholar_api_key. Alternatively pass --sources papers.json."
-        )
-    rng = random.Random(seed)
-    sources, seen = [], set()
-    # Several reserves per slot let inaccessible PDFs fail without reducing the requested count.
-    for language in languages:
-        areas = list(custom_areas or AREAS[language])
-        rng.shuffle(areas)
-        slots = sum(languages[i % len(languages)] == language for i in range(count))
-        target = max(slots * 3, slots + 3)
-        for area_index, area in enumerate(areas[: min(len(areas), max(slots * 2, 3))]):
-            log.emit("scholar_search", language=language, area=area)
-            for source in scholar_search(area, language, api_key):
-                if source["paper_id"] not in seen:
-                    sources.append(source)
-                    seen.add(source["paper_id"])
-            if area_index >= min(2, len(areas) - 1) and sum(s["language"] == language for s in sources) >= target:
-                break
-    return balance_sources(sources, seed)
-
-
-def balance_sources(sources, seed):
-    """Round-robin distinct areas so the first search cannot dominate acquisition."""
-    grouped = defaultdict(list)
-    for source in sources:
-        grouped[(source["language"], source["area"])].append(source)
-    rng = random.Random(seed)
-    keys = list(grouped)
-    rng.shuffle(keys)
-    for rows in grouped.values():
-        rng.shuffle(rows)
-    result = []
-    while any(grouped.values()):
-        for key in keys:
-            if grouped[key]:
-                result.append(grouped[key].pop())
-    return result
+def difficulty_schedule(count):
+    """Allocate the 50/30/20 mix by largest remainder, with stable tie order."""
+    if type(count) is not int or count < 1:
+        raise GenerationError("--samples-per-paper must be a positive integer.")
+    weights = (50, 30, 20)
+    counts = [count * weight // 100 for weight in weights]
+    order = sorted(range(3), key=lambda i: (-(count * weights[i] % 100), i))
+    for index in order[: count - sum(counts)]:
+        counts[index] += 1
+    return [difficulty for difficulty, number in zip(("easy", "medium", "hard"), counts) for _ in range(number)]
 
 
 def extract_pdf(path):
@@ -324,35 +201,27 @@ def acquire_source(source, cache, log):
     stem = source["paper_id"].replace(":", "-")
     text_path, meta_path = cache / f"{stem}.txt", cache / f"{stem}.json"
     if text_path.exists() and meta_path.exists():
-        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-        if metadata.get("text_sha256") == file_sha256(text_path):
-            log.emit("extraction_cache_hit", paper_id=source["paper_id"])
-            return _exact_text(text_path), metadata
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("text_sha256") == file_sha256(text_path)
+                and metadata.get("input_sha256") == source["input_sha256"]
+                and metadata.get("text_path") == str(text_path)
+            ):
+                text = _exact_text(text_path)
+                log.emit("extraction_cache_hit", paper_id=source["paper_id"])
+                return text, metadata
+        except (ValueError, OSError):
+            # Failed papers have no accepted checkpoint; rebuild an unusable extraction cache.
+            pass
     log.emit("paper_acquire", paper_id=source["paper_id"], title=source["title"])
-    if source.get("path"):
-        local = Path(source["path"])
-    else:
-        url = source["pdf_url"]
-        if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
-            raise GenerationError("PDF URL must use HTTP or HTTPS.")
-        local = cache / f"{stem}.pdf"
-        if not local.exists():
-            try:
-                request = urllib.request.Request(url, headers={"User-Agent": "sense-model/0.1 paper-acquisition"})
-                with urllib.request.build_opener(HttpPdfRedirects()).open(request, timeout=60) as response:
-                    payload = response.read(MAX_DOWNLOAD + 1)
-            except GenerationError:
-                raise
-            except Exception:
-                # Invalid URLs and HTTP errors can contain signed credential URLs.
-                raise GenerationError("PDF download failed; source may require access or be unavailable.") from None
-            if len(payload) > MAX_DOWNLOAD or not payload.lstrip().startswith(b"%PDF-"):
-                raise GenerationError("Source is not a PDF or exceeds the 40 MiB limit.")
-            temporary = local.with_suffix(".tmp")
-            temporary.write_bytes(payload)
-            temporary.replace(local)
+    local = Path(source["path"])
     if local.suffix.lower() in (".txt", ".text"):
-        text = local.read_text(encoding="utf-8")
+        try:
+            text = _exact_text(local)
+        except UnicodeError:
+            raise GenerationError("Text source must use UTF-8 encoding.") from None
         extractor = "utf8-text"
     else:
         try:
@@ -366,10 +235,12 @@ def acquire_source(source, cache, log):
         extractor = "pdftotext" if shutil.which("pdftotext") else "pypdf"
     if not text.strip():
         raise GenerationError("No extractable text; scanned PDFs need an explicit OCR text source.")
+    if file_sha256(local) != source["input_sha256"]:
+        raise GenerationError("Source changed during extraction; restore the original input or start a new run.")
     with text_path.open("w", encoding="utf-8", newline="") as stream:
         stream.write(text)
     metadata = {
-        "input_sha256": file_sha256(local),
+        "input_sha256": source["input_sha256"],
         "text_sha256": file_sha256(text_path),
         "text_path": str(text_path),
         "extractor": extractor,
@@ -423,7 +294,7 @@ def target_pool(text, inventory, seed, limit=160):
 
 
 def select_samples(source, text, extraction, inventory, inventory_meta, difficulties, model, seed, log, timeout=180):
-    pool = target_pool(text, inventory, seed)
+    pool = target_pool(text, inventory, seed, limit=max(160, len(difficulties)))
     if len(pool) < len(difficulties):
         raise GenerationError(f"Only {len(pool)} ambiguous dictionary occurrences; need {len(difficulties)}.")
     offered = [{**p, "candidates": [vars(c) for c in inventory[(p["lemma"], p["pos"])]]} for p in pool]
@@ -564,7 +435,7 @@ def validate_cached_batch(
             raise ValueError("batch")
         stem = paper["paper_id"].replace(":", "-")
         text_path = cache / f"{stem}.txt"
-        raw_path = Path(source["path"]) if source.get("path") else cache / f"{stem}.pdf"
+        raw_path = Path(source["path"])
         extraction = json.loads((cache / f"{stem}.json").read_text(encoding="utf-8"))
         if any(paper.get(k) != v for k, v in extraction.items()):
             raise ValueError("extraction")
@@ -575,7 +446,7 @@ def validate_cached_batch(
         ):
             raise ValueError("hash")
         text = _exact_text(text_path)
-        offered = {row["pool_id"]: row for row in target_pool(text, inventory, seed)}
+        offered = {row["pool_id"]: row for row in target_pool(text, inventory, seed, limit=max(160, len(schedule)))}
         occurrences = set()
         for ordinal, (row, difficulty) in enumerate(zip(selected, schedule)):
             ex = Example.from_dict(row)
@@ -665,83 +536,110 @@ def validate_cached_batch(
 
 def generate(
     *,
-    n,
+    sources,
     output,
     lexicons,
-    sources=None,
+    samples_per_paper=10,
     model=DEFAULT_MODEL,
     seed=42,
-    languages=("en", "pt"),
-    scholar_api_key=None,
     resume=False,
     timeout=180,
-    areas=None,
-    max_papers=None,
 ):
-    if type(n) is not int or n < 1:
-        raise GenerationError("--n must be a positive integer.")
-    languages = tuple(dict.fromkeys(language_tag(lang) for lang in languages))
-    if not languages:
-        raise GenerationError("Select at least one language.")
-    if max_papers is not None and max_papers < math.ceil(n / 10):
-        raise GenerationError("--max-papers cannot be below ceil(n/10). It bounds attempted new papers.")
+    schedule = difficulty_schedule(samples_per_paper)
+    # Validate every listed input before creating a run or calling the model.
+    sources = Path(sources).expanduser().resolve()
+    plan = read_sources(sources)
+    count = len(plan)
+    requested = count * samples_per_paper
+    languages = list(dict.fromkeys(source["language"] for source in plan))
+    inventories, inventory_meta = {}, {}
+    for lang in languages:
+        if not lexicons.get(lang):
+            raise GenerationError(f"Supply --lexicon-{lang} or [generation].lexicon_{lang} (pinned JSONL dictionary).")
+        inventories[lang], inventory_meta[lang] = load_inventory(lexicons[lang], lang)
     output = Path(output).expanduser().resolve()
     manifest_path = output / "manifest.json"
     if output.exists() and any(output.iterdir()) and not resume:
         raise GenerationError("Output directory is not empty; use --resume or choose a new directory.")
     if resume and output.exists() and any(output.iterdir()) and not manifest_path.is_file():
         raise ResumeError("Resume requires the original manifest; restore it or choose a new output directory.")
-    output.mkdir(parents=True, exist_ok=True)
-    cache = output / "cache"
-    cache.mkdir(exist_ok=True)
-    log = EventLog(output / "events.jsonl")
-    count = math.ceil(n / 10)
-    required_languages = set(languages[i % len(languages)] for i in range(count))
-    inventories, inventory_meta = {}, {}
-    for lang in sorted(required_languages):
-        if not lexicons.get(lang):
-            raise GenerationError(f"Supply --lexicon-{lang} or [generation].lexicon_{lang} (pinned JSONL dictionary).")
-        inventories[lang], inventory_meta[lang] = load_inventory(lexicons[lang], lang)
-    explicit_sources = read_sources(sources) if sources else None
     settings = {
         "version": VERSION,
-        "n": n,
+        "samples_per_paper": samples_per_paper,
+        "requested": requested,
         "paper_count": count,
         "model": model,
         "seed": seed,
-        "languages": list(languages),
+        "languages": languages,
         "inventories": inventory_meta,
-        "areas": areas,
-        "max_papers": max_papers,
-        "source_manifest": str(Path(sources).resolve()) if sources else None,
-        "source_manifest_sha256": file_sha256(sources) if sources else None,
-        "explicit_sources": explicit_sources,
+        "source_manifest": str(Path(sources).expanduser().resolve()),
+        "source_manifest_sha256": file_sha256(sources),
+        "explicit_sources": plan,
     }
     run_id = fingerprint(settings)
     previous = None
     if manifest_path.exists():
-        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            raise ResumeError("Resume manifest is unreadable; restore it or choose a new output directory.") from None
         if (
             not isinstance(previous, dict)
             or previous.get("run_id") != run_id
             or fingerprint({key: previous.get(key) for key in settings}) != run_id
-            or previous.get("difficulty_schedule") != DIFFICULTIES
+            or previous.get("difficulty_schedule") != schedule
         ):
-            raise GenerationError("Resume settings or input hashes changed; choose a new output directory.")
-    manifest = {**settings, "run_id": run_id, "status": "running", "difficulty_schedule": DIFFICULTIES}
-    if previous is None:
-        atomic_json(manifest_path, manifest)
-    log.emit("generation_started", n=n, paper_count=count, model=model, seed=seed, resume=resume)
-    samples, papers, failures, used_ids, used_texts, used_inputs = [], [], [], set(), set(), set()
-    attempted = 0
+            raise ResumeError("Resume settings or input hashes changed; choose a new output directory.")
+    output.mkdir(parents=True, exist_ok=True)
+    cache = output / "cache"
+    cache.mkdir(exist_ok=True)
+    log = EventLog(output / "events.jsonl")
+    manifest = {**settings, "run_id": run_id, "status": "running", "difficulty_schedule": schedule}
+    samples, papers, failures = [], [], []
+    source_lookup = {source["paper_id"]: source for source in plan}
+
+    # Validate all existing checkpoints before touching any previous exports.
+    restored, seen_texts = {}, set()
+    expected_slots = {f"slot-{slot:06d}.json" for slot in range(count)}
+    if any(path.name not in expected_slots for path in cache.glob("slot-*.json")):
+        raise ResumeError("Resume cache contains unexpected paper slots; use the original run directory.")
+    for slot, source in enumerate(plan):
+        slot_path = cache / f"slot-{slot:06d}.json"
+        if not slot_path.exists():
+            continue
+        try:
+            cached = json.loads(slot_path.read_text(encoding="utf-8"))
+            if cached["paper"]["paper_id"] != source["paper_id"]:
+                raise ValueError("slot source")
+        except (KeyError, TypeError, ValueError, OSError):
+            raise ResumeError("Resume batch cache is unreadable or belongs to another paper slot.") from None
+        language = source["language"]
+        restored[slot] = validate_cached_batch(
+            cached,
+            run_id=run_id,
+            slot=slot,
+            language=language,
+            schedule=schedule,
+            cache=cache,
+            inventory=inventories[language],
+            inventory_meta=inventory_meta[language],
+            model=model,
+            seed=seed + slot,
+            sources=source_lookup,
+        )
+        text_hash = restored[slot][1]["text_sha256"]
+        if text_hash in seen_texts:
+            raise ResumeError("Resume cache repeats extracted paper content; restore the original cache.")
+        seen_texts.add(text_hash)
 
     def save(status, error=None):
         atomic_jsonl(output / "samples.jsonl", samples)
         atomic_jsonl(output / "papers.jsonl", papers)
         report = {
             "status": status,
-            "requested": n,
+            "requested": requested,
             "accepted": len(samples),
+            "samples_per_paper": samples_per_paper,
             "requested_papers": count,
             "accepted_papers": len(papers),
             "languages": dict(Counter(s["language"] for s in samples)),
@@ -755,139 +653,75 @@ def generate(
         atomic_json(manifest_path, {**manifest, "status": status})
         return report
 
+    atomic_json(manifest_path, manifest)
+    log.emit(
+        "generation_started",
+        requested=requested,
+        paper_count=count,
+        samples_per_paper=samples_per_paper,
+        model=model,
+        seed=seed,
+        resume=resume,
+    )
     try:
-        discovery_path = cache / "discovery.json"
-        if explicit_sources is not None:
-            plan = balance_sources(explicit_sources, seed)
-        elif discovery_path.exists():
-            plan = json.loads(discovery_path.read_text(encoding="utf-8"))
-        elif previous is not None and previous.get("plan_fingerprint"):
-            raise ResumeError(
-                "Resume discovery plan is missing; restore the original cache or choose a new output directory."
-            )
-        else:
-            plan = discover_sources(count, languages, seed, scholar_api_key, log, areas)
-            atomic_json(discovery_path, plan)
-        plan_fingerprint = fingerprint(plan)
-        if previous is not None and previous.get("plan_fingerprint") not in (None, plan_fingerprint):
-            raise ResumeError(
-                "Resume discovery/source plan changed; restore the cache or choose a new output directory."
-            )
-        manifest["plan_fingerprint"] = plan_fingerprint
-        source_lookup = {source["paper_id"]: source for source in plan}
-        restored, seen_papers, seen_texts, seen_inputs = {}, set(), set(), set()
-        expected_slots = {f"slot-{slot:06d}.json" for slot in range(count)}
-        if any(path.name not in expected_slots for path in cache.glob("slot-*.json")):
-            raise ResumeError("Resume cache contains unexpected paper slots; use the original run directory.")
-        for slot in range(count):
-            slot_path = cache / f"slot-{slot:06d}.json"
-            if not slot_path.exists():
-                continue
-            language = languages[slot % len(languages)]
-            schedule = DIFFICULTIES[: min(10, n - slot * 10)]
-            try:
-                cached = json.loads(slot_path.read_text(encoding="utf-8"))
-            except (ValueError, OSError):
-                raise ResumeError(
-                    "Resume batch cache is unreadable; restore the cache or choose a new directory."
-                ) from None
-            restored[slot] = validate_cached_batch(
-                cached,
-                run_id=run_id,
-                slot=slot,
-                language=language,
-                schedule=schedule,
-                cache=cache,
-                inventory=inventories[language],
-                inventory_meta=inventory_meta[language],
-                model=model,
-                seed=seed + slot,
-                sources=source_lookup,
-            )
-            _, paper = restored[slot]
-            if (
-                paper["paper_id"] in seen_papers
-                or paper["text_sha256"] in seen_texts
-                or paper["input_sha256"] in seen_inputs
-            ):
-                raise ResumeError("Resume cache repeats a paper or its contents; restore the original cache.")
-            seen_papers.add(paper["paper_id"])
-            seen_texts.add(paper["text_sha256"])
-            seen_inputs.add(paper["input_sha256"])
-        atomic_json(manifest_path, manifest)
-        for slot in range(count):
-            language = languages[slot % len(languages)]
-            schedule = DIFFICULTIES[: min(10, n - len(samples))]
-            slot_path = cache / f"slot-{slot:06d}.json"
+        for slot, source in enumerate(plan):
+            language = source["language"]
             if slot in restored:
                 selected, paper = restored[slot]
                 log.emit("paper_resume", slot=slot, paper_id=paper["paper_id"], accepted=len(selected))
             else:
-                selected = None
-                for source in plan:
-                    if (
-                        source["language"] != language
-                        or source["paper_id"] in used_ids
-                        or source["paper_id"] in seen_papers
-                    ):
-                        continue
-                    if max_papers is not None and attempted >= max_papers:
-                        raise GenerationError("Reached --max-papers acquisition limit; partial results were saved.")
-                    attempted += 1
-                    try:
-                        text, extraction = acquire_source(source, cache, log)
-                        if (
-                            extraction["text_sha256"] in used_texts
-                            or extraction["input_sha256"] in used_inputs
-                            or extraction["text_sha256"] in seen_texts
-                            or extraction["input_sha256"] in seen_inputs
-                        ):
-                            raise GenerationError("Duplicate extracted paper content.")
-                        selected = select_samples(
-                            source,
-                            text,
-                            extraction,
-                            inventories[language],
-                            inventory_meta[language],
-                            schedule,
-                            model,
-                            seed + slot,
-                            log,
-                            timeout,
-                        )
-                        paper = {**source, **extraction, "slot": slot, "samples": len(selected)}
-                        batch = {"samples": selected, "paper": paper}
-                        atomic_json(slot_path, {**batch, "run_id": run_id, "batch_fingerprint": fingerprint(batch)})
-                        break
-                    except (ValueError, OSError, subprocess.SubprocessError) as exc:
-                        # A Codex configuration/auth/model failure cannot be fixed by trying another paper.
-                        if not isinstance(exc, GenerationError):
-                            raise
-                        failure = {"paper_id": source["paper_id"], "slot": slot, "error": str(exc)}
-                        failures.append(failure)
-                        used_ids.add(source["paper_id"])
-                        log.emit("paper_rejected", **failure)
-                if selected is None:
-                    raise GenerationError(
-                        f"Not enough usable {language} papers for slot {slot + 1}/{count}. "
-                        "Add accessible sources/ambiguous dictionary entries and resume with the same inputs, "
-                        "or use a new output directory for changed inputs."
+                try:
+                    text, extraction = acquire_source(source, cache, log)
+                    if extraction["text_sha256"] in seen_texts:
+                        raise GenerationError("Duplicate extracted paper content.")
+                    # Reserve content even when selection fails: another listed paper cannot replace it.
+                    seen_texts.add(extraction["text_sha256"])
+                    selected = select_samples(
+                        source,
+                        text,
+                        extraction,
+                        inventories[language],
+                        inventory_meta[language],
+                        schedule,
+                        model,
+                        seed + slot,
+                        log,
+                        timeout,
                     )
-            used_ids.add(paper["paper_id"])
-            used_texts.add(paper["text_sha256"])
-            used_inputs.add(paper["input_sha256"])
+                    paper = {**source, **extraction, "slot": slot, "samples": len(selected)}
+                    batch = {"samples": selected, "paper": paper}
+                    atomic_json(
+                        cache / f"slot-{slot:06d}.json",
+                        {
+                            **batch,
+                            "run_id": run_id,
+                            "batch_fingerprint": fingerprint(batch),
+                        },
+                    )
+                except (GenerationError, CodexError, OSError, subprocess.SubprocessError) as exc:
+                    failure = {
+                        "paper_id": source["paper_id"],
+                        "path": source["path"],
+                        "slot": slot,
+                        "status": "incomplete",
+                        "error": str(exc),
+                    }
+                    failures.append(failure)
+                    log.emit("paper_rejected", **failure)
+                    save("running")
+                    continue
             papers.append(paper)
             samples.extend(selected)
             save("running")
             log.emit(
                 "paper_accepted", slot=slot, paper_id=paper["paper_id"], accepted=len(selected), total=len(samples)
             )
-        report = save("complete")
-        log.emit("generation_complete", accepted=len(samples), papers=len(papers))
+        status = "incomplete" if failures else "complete"
+        report = save(status)
+        log.emit("generation_finished", status=status, accepted=len(samples), papers=len(papers))
         return report
     except Exception as exc:
-        if not isinstance(exc, ResumeError):
-            save("incomplete", str(exc))
+        save("incomplete", str(exc))
         log.emit("generation_failed", error=str(exc), accepted=len(samples))
         raise
 
@@ -895,25 +729,17 @@ def generate(
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--n",
-        "--samples",
-        dest="n",
-        type=int,
-        help="Total samples across both languages; defaults to generation.samples",
+        "--input",
+        "--sources",
+        dest="sources",
+        help="JSON manifest listing local paper paths and languages (default papers.json)",
     )
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--sources", help="Explicit JSON/JSONL source manifest instead of Google Scholar discovery")
-    parser.add_argument("--inventory", help="Dictionary JSONL alias when --languages selects exactly one language")
+    parser.add_argument("--samples-per-paper", type=int, help="Samples from every listed paper (default 10)")
+    parser.add_argument("--output")
+    parser.add_argument("--inventory", help="Dictionary JSONL for the manifest's single language")
     parser.add_argument("--lexicon-en", help="Pinned English dictionary JSONL")
     parser.add_argument("--lexicon-pt", help="Pinned Portuguese dictionary JSONL")
-    parser.add_argument(
-        "--languages", "--language", dest="languages", default="en,pt", help="Paper rotation, default en,pt"
-    )
     parser.add_argument("--model", help=f"Local Codex model (default {DEFAULT_MODEL}); never silently falls back")
-    parser.add_argument("--areas", help="Comma-separated Scholar areas; seeded round-robin acquisition")
-    parser.add_argument(
-        "--max-papers", type=int, help="Bound attempted new papers, including inaccessible/rejected PDFs"
-    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--config")
@@ -921,35 +747,37 @@ def main(argv=None):
     config = load_config(args.config)
     generation = config.get("generation", {})
     model = args.model or config.get("codex", {}).get("model", DEFAULT_MODEL)
+    sources = args.sources or generation.get("input", "papers.json")
+    output = args.output or generation.get("output", "data/pilot/generated")
     try:
-        languages = args.languages.split(",")
         lexicons = {
             "en": args.lexicon_en or generation.get("lexicon_en"),
             "pt": args.lexicon_pt or generation.get("lexicon_pt"),
         }
         if args.inventory:
+            languages = {source["language"] for source in read_sources(sources)}
             if len(languages) != 1:
-                raise GenerationError("--inventory requires exactly one --languages value (en or pt).")
-            lexicons[language_tag(languages[0])] = args.inventory
-        if generation.get("samples_per_paper", 10) != 10:
-            raise GenerationError("This dataset contract requires generation.samples_per_paper = 10.")
+                raise GenerationError("--inventory requires a manifest with exactly one language; use --lexicon-en/pt.")
+            lexicons[languages.pop()] = args.inventory
         report = generate(
-            n=args.n if args.n is not None else generation.get("samples", 1000),
-            output=args.output,
+            sources=sources,
+            samples_per_paper=(
+                args.samples_per_paper
+                if args.samples_per_paper is not None
+                else generation.get("samples_per_paper", 10)
+            ),
+            output=output,
             lexicons=lexicons,
-            sources=args.sources,
             model=model,
             seed=args.seed if args.seed is not None else generation.get("seed", 42),
-            languages=languages,
             resume=args.resume,
-            areas=[a.strip() for a in args.areas.split(",") if a.strip()] if args.areas else None,
-            max_papers=args.max_papers,
             timeout=config.get("codex", {}).get("timeout_seconds", 180),
-            scholar_api_key=os.environ.get("SERPAPI_API_KEY") or generation.get("scholar_api_key"),
         )
     except (ValueError, OSError, CodexError, subprocess.SubprocessError) as exc:
         parser.exit(1, f"Generation failed: {exc}\n")
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if report["status"] != "complete":
+        parser.exit(1, "Generation incomplete; inspect generation-report.json and resume to retry failed papers.\n")
     return report
 
 

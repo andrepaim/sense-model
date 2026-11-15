@@ -22,3 +22,8 @@ web-tests/playwright-report/
 
 # Downloaded papers, generated data, and provider responses
 data/pilot/
+
+# User-selected paper files and local manifest
+/papers/*
+!/papers/README.md
+/papers.json

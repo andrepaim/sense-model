@@ -76,13 +76,19 @@ Small authored smoke examples are tests of software mechanics, not a benchmark.
 uv sync --extra pilot --extra train --extra export --extra dev
 uv run wsd config init
 # Set jev.api_key in ~/.config/sense-model/config.toml.
-# Scholar discovery additionally needs generation.scholar_api_key (SerpAPI).
-uv run wsd generate --help
-uv run wsd label --help
-uv run wsd annotate --import-file data/pilot/en/labeled/samples.jsonl --open
+# Set generation.lexicon_en / lexicon_pt to your dictionary JSONL paths.
+cp papers.example.json papers.json
+# Put PDFs in papers/ and edit papers.json to list them.
+uv run wsd generate --input papers.json --samples-per-paper 10
+uv run wsd label
+uv run wsd annotate --import-file data/pilot/generated/labeled/samples.jsonl --open
 ```
 
-The generator selects authentic paper passages with local Codex and attaches
+The generator reads a JSON manifest pointing to local PDFs in `papers/`, processes
+every listed paper in order, and requests 10 samples per paper by default
+(5 easy, 3 medium, 2 hard). Set `--samples-per-paper` to change that count.
+JSON manifest paths resolve relative to the manifest file. The generator selects
+authentic paper passages with local Codex and attaches
 pinned dictionary meanings. The labeler calls Jev for every example, then asks
 Codex to independently check low/missing-confidence results or failed requests.
 The default CLI model is `gpt-6-luna`; both scripts accept an override. Local

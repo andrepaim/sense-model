@@ -1,6 +1,6 @@
 # Automatic research-paper dataset pilot
 
-Implemented workflow: paper discovery and passage selection → Jev on every
+Implemented workflow: local paper manifest and passage selection → Jev on every
 example → independent local Codex for low/missing Jev confidence or request
 failure → single-human audit → compatible reviewed JSONL. This supersedes the
 human-first workflow in `pilot-plan.md` for newly generated automatic datasets.
@@ -8,8 +8,10 @@ The original manual annotation mode remains available.
 
 ## Contracts and defaults
 
-- `n` means total samples, not samples per paper. Each complete paper contributes
-  10 examples: 5 easy, 3 medium, 2 hard. The last paper is truncated to reach n.
+- Input is `papers.json`, listing local paths (normally in `papers/`) and language.
+  Every listed paper is processed in order. `--samples-per-paper` defaults to 10:
+  5 easy, 3 medium, 2 hard. Other counts use proportional 50/30/20 integer quotas.
+  Total requested examples = number of listed papers × samples per paper.
 - Start with 100 per language to test collection and review; scale to 1,000 per
   language after inspecting corrections, inventory coverage and provider usage.
 - Text and target spans come verbatim from extracted papers; the LLM chooses
@@ -35,10 +37,9 @@ Run `uv run wsd config init`. It preserves an existing file and creates
 `jev.api_key` there. `SENSE_MODEL_CONFIG` or `--config` selects another file.
 No credentials belong in Git, dataset artifacts, browser storage, or logs.
 
-Google Scholar discovery uses the documented SerpAPI Scholar adapter. It needs
-`generation.scholar_api_key` or `SERPAPI_API_KEY`, separate from the Jev key.
-An explicit paper manifest avoids that dependency. It does not bypass access
-controls or Scholar CAPTCHAs. See the [official adapter documentation](https://serpapi.com/google-scholar-api).
+Paper acquisition is manual: put PDFs in `papers/` and list them in the JSON
+manifest. Generation performs no web search or PDF downloads and needs no search
+provider credentials. See `papers.example.json` for the editable template.
 
 The shared Codex runner uses a temporary working directory, read-only sandbox,
 ephemeral sessions, disabled execution/integration features, and structured JSON
@@ -49,17 +50,17 @@ Verified with Codex CLI 0.169.0. See the [Codex configuration reference](https:/
 
 `python scripts/generate_dataset.py --help` (also `wsd generate`).
 
-1. Discover sources using seeded, diverse research-area searches or a manifest.
-2. Download accessible PDFs, preserve source metadata, extract text with page
-   boundaries, reject unreadable/wrong-language material, and deduplicate content.
+1. Read and validate every local path and language in the supplied manifest.
+2. Extract PDF text with page boundaries, preserve source metadata, reject
+   unreadable/wrong-language material, and detect duplicate content.
 3. Find exact dictionary occurrences; ask Codex to select the requested difficulty
    mix from these authentic passages. Validate every returned ID and source span.
-4. Save accepted examples and per-paper checkpoints. Replace failed papers when
-   possible. Exhaustion is an incomplete run, never fabricated success.
+4. Save accepted examples and per-paper checkpoints. Record failures and continue
+   with later listed papers. Any failure makes the run incomplete; no substitutions.
 5. Preserve input/inventory/model/prompt hashes for reproducibility and resume.
 
 Artifacts: `samples.jsonl`, `papers.jsonl`, `manifest.json`,
-`generation-report.json`, `events.jsonl`, and a local extraction/download cache.
+`generation-report.json`, `events.jsonl`, and a local extraction cache.
 Paper licenses are recorded for audit; availability does not grant redistribution
 rights. Verify source and inventory rights before publishing excerpts.
 
@@ -109,7 +110,7 @@ reviews, exports and benchmark label guards. Browser tests cover the real local
 server/store, card filtering, correction and export with provider calls mocked.
 
 A Codex structured-output smoke is integration evidence, not WSD accuracy.
-Live Jev and Scholar runs require the user's keys. Authored test fixtures are not
+Live Jev runs require the user's key. Authored test fixtures are not
 paper-derived benchmark data. Separate train/development/test by paper, and keep
 threshold tuning on development data. The paper-only collection measures research
 reading; fiction/general-prose coverage is a later source adapter.

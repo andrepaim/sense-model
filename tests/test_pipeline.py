@@ -163,7 +163,7 @@ def test_console_cli_returns_exit_code_not_report(monkeypatch):
     monkeypatch.setattr(
         cli.importlib, "import_module", lambda name: SimpleNamespace(main=lambda argv: {"complete": True})
     )
-    assert cli.main(["generate", "--samples", "1"]) == 0
+    assert cli.main(["generate", "--samples-per-paper", "1"]) == 0
     assert cli.main(["label"]) == 0
     monkeypatch.setattr(cli.importlib, "import_module", lambda name: SimpleNamespace(main=lambda argv: 2))
     assert cli.main(["evaluate"]) == 2
