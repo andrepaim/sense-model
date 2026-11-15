@@ -597,8 +597,11 @@ def validate_cached_batch(
             ):
                 raise ValueError("provenance")
             expected_source = {
-                "source": "paper-passage", "version": VERSION, "license": source["license"],
-                "paper_title": source["title"], "paper_url": source.get("url") or source.get("pdf_url"),
+                "source": "paper-passage",
+                "version": VERSION,
+                "license": source["license"],
+                "paper_title": source["title"],
+                "paper_url": source.get("url") or source.get("pdf_url"),
                 "source_url": source.get("url") or source.get("pdf_url"),
                 "domain": source.get("domain", source["area"]),
             }
