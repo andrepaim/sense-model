@@ -95,7 +95,7 @@ SQLite with transactions, foreign keys, workspace schema version, immutable
 initial votes and append-only audit events. Imported records immutable by ID;
 identical imports idempotent, changed records rejected to protect existing votes.
 Optimistic record revisions prevent stale tabs overwriting annotations.
-Snapshot JSONL backup includes records, review history, adjudications and AI
+Structured JSON audit backup includes records, review history, adjudications and AI
 metadata, never keys. Gold export emits existing Example schema with provenance,
 annotation protocol, review counts/AI exposure and source attribution; only
 adjudicated selected/none-fit outcomes qualify. Canonical candidate order stays
