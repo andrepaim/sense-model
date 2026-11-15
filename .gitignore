@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+runs/
+artifacts/
+data/raw/
+data/prepared/
+.env
+*.onnx
+*.safetensors
+node_modules/
+build/
+dist/

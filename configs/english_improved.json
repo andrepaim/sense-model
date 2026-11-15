@@ -1,0 +1,13 @@
+{
+  "model": "sign/Ettin-150m-WSD",
+  "train": "data/english-improved/train.jsonl",
+  "dev": "data/english-improved/dev.jsonl",
+  "output": "runs/english-improved",
+  "teacher_scores": "data/english-improved/teacher.jsonl",
+  "distill_alpha": 0.7,
+  "distill_temperature": 2.0,
+  "epochs": 3,
+  "learning_rate": 0.00005,
+  "seed": 42,
+  "device": "cpu"
+}

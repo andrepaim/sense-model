@@ -1,0 +1,13 @@
+{
+  "name": "sense-model-node-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predict": "node predict.mjs",
+    "test": "node --test test.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "onnxruntime-node": "1.30.0"
+  }
+}

@@ -1,0 +1,16 @@
+This project includes model implementation, decoder pruning, and answer-letter
+selection adapted from sign/word-sense-disambiguation:
+https://github.com/sign/word-sense-disambiguation
+Source snapshot: d1f7e107f2c072e876f031fdd5935bf496a0ef1b
+Local source fork: https://github.com/andrepaim/word-sense-disambiguation
+
+Original copyright (c) 2026 Nagish Inc. MIT license (see LICENSE).
+Imported files: src/wsd/model.py, src/wsd/model_surgery.py, src/wsd/letters.py.
+Corpus adapter attribution is documented with its implementation.
+
+The upstream English checkpoint sign/Ettin-150m-WSD declares Apache-2.0.
+Weights and training datasets are separate works; this repository's MIT license
+applies to code and does not override their terms. Release cards must preserve
+applicable upstream notices and name every training source and base revision.
+Corpus parsing in src/wsd/corpora.py is adapted from upstream training/wngt.py,
+under the same MIT notice above.

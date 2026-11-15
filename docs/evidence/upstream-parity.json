@@ -1,0 +1,42 @@
+{
+  "passed": true,
+  "model": "sign/Ettin-150m-WSD",
+  "checkpoint": "/home/andrepaim/.cache/huggingface/hub/models--sign--Ettin-150m-WSD/snapshots/8751b577199d1bb95b74fa2457da7065d57100ae",
+  "resolved_revision": "8751b577199d1bb95b74fa2457da7065d57100ae",
+  "upstream_commit": "d1f7e107f2c072e876f031fdd5935bf496a0ef1b",
+  "examples": [
+    {
+      "example_id": "smoke-0",
+      "prompt_equal": true,
+      "prompt_sha256": "59a2f31c73b4f21d82393f5368696a57372decd8d7bc48d70cb7413c835db3e0",
+      "selected_id_equal": true,
+      "max_probability_delta": 5.123857149680333e-08
+    },
+    {
+      "example_id": "smoke-1",
+      "prompt_equal": true,
+      "prompt_sha256": "fb2d6836e4c00fc507938eafed0ed99e8358c075a5755b791e3f9fe93044198b",
+      "selected_id_equal": true,
+      "max_probability_delta": 6.6614661564656785e-09
+    },
+    {
+      "example_id": "smoke-2",
+      "prompt_equal": true,
+      "prompt_sha256": "e8a1e7ecd9f150276edf73e8343e5675f73f221c264b40c72860fcdf5365e0d9",
+      "selected_id_equal": true,
+      "max_probability_delta": 2.5957721527802846e-08
+    },
+    {
+      "example_id": "smoke-3",
+      "prompt_equal": true,
+      "prompt_sha256": "55a83e5644cdad61d2c7f5899da40bea971ecb68e64055e7109f0758919f6c41",
+      "selected_id_equal": true,
+      "max_probability_delta": 7.647772415353415e-09
+    }
+  ],
+  "count": 4,
+  "tolerance": 1e-05,
+  "threads": 4,
+  "elapsed_seconds": 4.545928517996799,
+  "scope": "Extraction equivalence on illustrative English fixtures; not a quality benchmark."
+}

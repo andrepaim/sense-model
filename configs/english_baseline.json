@@ -1,0 +1,13 @@
+{
+  "model": "sign/Ettin-150m-WSD",
+  "train": "data/english/train.jsonl",
+  "dev": "data/english/dev.jsonl",
+  "calibration": "data/english/calibration.jsonl",
+  "output": "runs/english-baseline",
+  "epochs": 3,
+  "learning_rate": 0.00005,
+  "batch_size": 8,
+  "grad_accum": 8,
+  "seed": 42,
+  "device": "cpu"
+}

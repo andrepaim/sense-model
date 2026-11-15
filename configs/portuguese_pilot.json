@@ -1,0 +1,12 @@
+{
+  "model": "jhu-clsp/mmBERT-small",
+  "train": "data/portuguese-pilot/train.jsonl",
+  "dev": "data/portuguese-pilot/dev.jsonl",
+  "output": "runs/portuguese-pilot",
+  "none_text": "nenhuma das alternativas",
+  "epochs": 3,
+  "learning_rate": 0.00005,
+  "batch_size": 8,
+  "seed": 42,
+  "device": "cpu"
+}

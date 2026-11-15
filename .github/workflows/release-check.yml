@@ -1,0 +1,37 @@
+name: Explicit checkpoint and export check
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Hugging Face model ID
+        required: true
+        default: sign/Ettin-150m-WSD
+      revision:
+        description: Immutable checkpoint revision
+        required: true
+        default: 8751b577199d1bb95b74fa2457da7065d57100ae
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      MODEL_ID: ${{ inputs.model }}
+      MODEL_REVISION: ${{ inputs.revision }}
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --extra export
+      - run: uv run wsd export --model "$MODEL_ID" --revision "$MODEL_REVISION" --fixtures data/fixtures/smoke.jsonl --output artifacts/export --quantize
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: examples/node
+      - run: node examples/node/predict.mjs artifacts/export data/fixtures/smoke.jsonl
+      - run: WSD_ARTIFACT=../../artifacts/export npm test
+        working-directory: examples/node
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parity-report
+          path: artifacts/export/parity.json

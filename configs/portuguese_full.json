@@ -1,0 +1,13 @@
+{
+  "model": "runs/portuguese-pilot/final",
+  "train": "data/portuguese/train.jsonl",
+  "dev": "data/portuguese/dev.jsonl",
+  "calibration": "data/portuguese/calibration.jsonl",
+  "output": "runs/portuguese-full",
+  "none_text": "nenhuma das alternativas",
+  "epochs": 3,
+  "learning_rate": 0.00002,
+  "batch_size": 8,
+  "seed": 42,
+  "device": "cpu"
+}
