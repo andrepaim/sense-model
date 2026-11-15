@@ -263,3 +263,108 @@ def test_skip_is_audit_only_and_cannot_unlock_ai_or_count_as_review(store):
     skipped = vote(store, "alice", "skip", [])
     assert skipped["my_vote"]["gold_ids"] == ["seat"]
     assert skipped["my_vote"]["initial"]["outcome"] == "selected"
+
+
+def automatic_row(eid="auto", bucket="jev_high_confidence", ids=None, confidence=0.9):
+    data = row(eid)
+    data["gold_ids"] = ["seat"] if ids is None else ids
+    data["provenance"]["generation"] = {"difficulty": "hard", "area": "linguistics", "paper_id": "paper-1"}
+    data["provenance"]["automatic"] = {
+        "status": "labeled",
+        "bucket": bucket,
+        "selected_by": "jev",
+        "threshold": 0.8,
+        "label_tier": "silver",
+        "jev": {"choice": "seat", "selected_ids": data["gold_ids"], "confidence": confidence},
+        "codex": None,
+        "escalation_reason": None,
+    }
+    return data
+
+
+def test_automatic_review_preserves_proposal_and_exports_one_human_approval(tmp_path):
+    s = Store(tmp_path / "auto.sqlite")
+    source = automatic_row()
+    s.import_examples([source])
+    detail = s.get_example("auto", "owner")
+    assert detail["mode"] == "automatic" and detail["review"] is None
+    assert detail["example"]["provenance"]["proposed_gold_ids"] == ["seat"]
+    assert "gold_ids" not in detail["example"]
+    assert detail["automatic"] == source["provenance"]["automatic"]
+    assert not s.export_gold()["examples"]
+    s.review("auto", "owner", "approve", expected_revision=detail["revision"])
+    gold = s.export_gold()["examples"][0]
+    assert gold["gold_ids"] == ["seat"]
+    assert gold["provenance"]["review"]["status"] == "approved"
+    assert gold["provenance"]["automatic"] == source["provenance"]["automatic"]
+    assert s.assert_disclosure_allowed("another-owner", backup=True)
+    with pytest.raises(RuntimeError):
+        s.review("auto", "owner", "reject", expected_revision=detail["revision"])
+    with pytest.raises(ValueError, match="automatic review"):
+        s.vote("auto", "owner", "none_fits", [], expected_revision=1)
+    assert s.get_example("auto", "another-owner")["review"]["reviewer"] == "owner"
+
+
+def test_automatic_correction_multi_ids_none_insufficient_reject_and_audit(tmp_path):
+    s = Store(tmp_path / "auto.sqlite")
+    s.import_examples([automatic_row()])
+    for action, outcome, ids, status in [
+        ("correct", "selected", ["seat", "financial"], "corrected"),
+        ("correct", "none_fits", [], "corrected"),
+        ("correct", "insufficient_context", [], "insufficient_context"),
+        ("reject", None, [], "rejected"),
+    ]:
+        detail = s.get_example("auto", "owner")
+        s.review("auto", "owner", action, outcome, ids, "Audit note", detail["revision"])
+        detail = s.get_example("auto", "owner")
+        assert detail["review"]["status"] == status
+        assert detail["review"]["note"] == "Audit note"
+        exported = s.export_gold()["examples"]
+        assert bool(exported) == (status == "corrected")
+        if exported:
+            assert exported[0]["gold_ids"] == ids
+        assert detail["example"]["provenance"]["proposed_gold_ids"] == ["seat"]
+    assert len(s.backup()["human_reviews"]) == 1
+    assert len([e for e in s.backup()["events"] if e["action"] == "human_review"]) == 4
+    all_status = s.export_all()["examples"][0]
+    assert all_status["provenance"]["review_status"] == "rejected"
+    assert all_status["gold_ids"] is None
+
+
+def test_automatic_filters_and_observed_jev_accuracy_denominators(tmp_path):
+    s = Store(tmp_path / "auto.sqlite")
+    corrected_by_codex = automatic_row("b")
+    corrected_by_codex["provenance"]["automatic"].update(
+        selected_by="codex", codex={"outcome": "selected", "selected_ids": ["financial"]}
+    )
+    s.import_examples([automatic_row("a"), corrected_by_codex, automatic_row("c", confidence=0.4)])
+    for eid, ids in [("a", ["seat"]), ("b", ["financial"])]:
+        s.review(eid, "owner", "correct", "selected", ids, expected_revision=0)
+    assert len(s.list_examples("owner", status="reviewed")) == 2
+    assert [r["id"] for r in s.list_examples("owner", status="unreviewed")] == ["c"]
+    assert (
+        len(
+            s.list_examples(
+                "owner", language="pt", difficulty="hard", area="linguistics", paper="paper-1", confidence="high"
+            )
+        )
+        == 2
+    )
+    assert s.list_examples("owner", bucket="unresolved") == []
+    report = s.stats()["automatic_review"]
+    assert report["reviewed"] == 2 and report["accepted"] == 2
+    assert report["by_confidence"]["90–100%"]["accuracy"] == 0.5
+    assert report["by_confidence"]["90–100%"]["comparable"] == 2
+    assert s.export_all()["manifest"]["count"] == 3
+
+
+def test_unresolved_automatic_proposal_requires_correction(tmp_path):
+    s = Store(tmp_path / "auto.sqlite")
+    data = automatic_row()
+    data.pop("gold_ids")
+    data["provenance"]["automatic"].update(status="unresolved", bucket="unresolved", selected_by=None)
+    s.import_examples([data])
+    with pytest.raises(ValueError, match="Resolve"):
+        s.review("auto", "owner", "approve")
+    s.review("auto", "owner", "correct", "none_fits", [])
+    assert s.export_gold()["examples"][0]["gold_ids"] == []

@@ -363,8 +363,10 @@ def main(argv=None):
     if args.predictions and (args.latency_repeats or args.permutations):
         parser.error("latency/permutation evaluation requires --model")
     from wsd.data import read_jsonl, validate_splits
+    from wsd.pipeline import require_reviewed
 
     examples = read_jsonl(args.data)
+    require_reviewed(examples)
     predictor = None
     cold_load = None
     calibration = json.loads(args.calibration.read_text(encoding="utf-8")) if args.calibration else None
@@ -406,6 +408,7 @@ def main(argv=None):
         if args.calibration_data:
             validate_splits({"test": args.data, "calibration": args.calibration_data})
             calibration_examples = read_jsonl(args.calibration_data)
+            require_reviewed(calibration_examples)
             calibration = fit_calibration(calibration_examples, predict(calibration_examples), args.target_precision)
             args.calibration_output.parent.mkdir(parents=True, exist_ok=True)
             args.calibration_output.write_text(json.dumps(calibration, indent=2) + "\n", encoding="utf-8")

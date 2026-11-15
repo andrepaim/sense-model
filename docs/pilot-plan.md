@@ -1,3 +1,5 @@
+> For the current automatic-first workflow, see [automatic-pilot-plan.md](automatic-pilot-plan.md). This document describes the retained manual workflow.
+
 # English and Portuguese annotation pilot
 
 Status: workflow implemented; human collection/review not yet executed. Scope: reproducible collection and review

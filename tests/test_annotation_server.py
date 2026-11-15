@@ -37,7 +37,8 @@ def record():
 
 
 @pytest.fixture
-def api(tmp_path):
+def api(tmp_path, monkeypatch):
+    monkeypatch.setenv("SENSE_MODEL_CONFIG", str(tmp_path / "config.toml"))
     store = Store(tmp_path / "workspace.sqlite")
     server = AnnotationServer(("127.0.0.1", 0), store)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -150,3 +151,50 @@ def test_label_downloads_and_aggregate_stats_preserve_blindness(api):
     assert status == 200 and stats["blind_mode"] is True
     assert "initial_agreement" not in stats and "buckets" not in stats
     assert client.call("GET", "/api/example?id=real-1")[1]["my_vote"] is None
+
+
+def test_automatic_review_routes_and_all_status_export(api):
+    client, _, _ = api
+    data = record()
+    data["provenance"]["automatic"] = {
+        "status": "labeled",
+        "bucket": "jev_low_codex_disagreed",
+        "selected_by": "codex",
+        "threshold": 0.8,
+        "jev": {"choice": "finance", "selected_ids": ["finance"], "confidence": 0.5},
+        "codex": {"outcome": "selected", "selected_ids": ["seat"], "rationale": "A long seat."},
+    }
+    assert client.call("POST", "/api/import", {"examples": [data]})[0] == 200
+    detail = client.call("GET", "/api/example?id=real-1")[1]
+    assert detail["automatic"]["codex"]["rationale"] == "A long seat."
+    assert client.call("GET", "/api/examples?bucket=unresolved")[1]["examples"] == []
+    assert len(client.call("GET", "/api/examples?bucket=jev_low_codex_disagreed")[1]["examples"]) == 1
+    assert (
+        client.call("POST", "/api/export", {"scope": "all"})[1]["examples"][0]["provenance"]["review_status"]
+        == "unreviewed"
+    )
+    status, saved = client.call("POST", "/api/review", {"id": "real-1", "action": "approve", "expected_revision": 0})
+    assert status == 200 and saved["review"]["status"] == "approved"
+    exported = client.call("POST", "/api/export", {})[1]
+    assert exported["examples"][0]["gold_ids"] == ["seat"]
+    assert client.call("POST", "/api/review", {"id": "real-1", "action": "reject", "expected_revision": 0})[0] == 409
+
+
+def test_explicit_config_key_persistence_never_discloses_secret(api, monkeypatch):
+    from wsd.pipeline import load_config
+
+    client, _, path = api
+    config_path = path / "private" / "config.toml"
+    monkeypatch.setenv("SENSE_MODEL_CONFIG", str(config_path))
+    secret = "persisted-fixture-secret"
+    status, response = client.call(
+        "POST", "/api/key", {"key": secret, "provider": "typesafe", "model": "jev-latest", "save_to_config": True}
+    )
+    assert status == 200 and response["persisted"]
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert load_config()["jev"]["api_key"] == secret
+    assert secret not in json.dumps(response)
+    assert secret not in json.dumps(client.call("GET", "/api/session")[1])
+    assert secret not in json.dumps(client.call("POST", "/api/backup", {})[1])
+    assert client.call("DELETE", "/api/key")[0] == 200
+    assert not load_config()["jev"]["api_key"]

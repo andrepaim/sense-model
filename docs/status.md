@@ -50,3 +50,13 @@ commands are implemented. See `pilot-plan.md` and `pilot-guide.md`. Independent
 votes, Jev assistance/key entry, two-reviewer adjudication and canonical exports
 are tested. This adds the human review workflow; it does not supply 100 real
 reviewed examples per language or change the research prerequisites above.
+
+## Automatic dataset pipeline
+
+`wsd generate` / `scripts/generate_dataset.py` collect paper passages and use
+local Codex to choose dictionary-backed examples. `wsd label` /
+`scripts/label_dataset.py` run Jev first and escalate low-confidence cases to
+independent Codex judgment. The local annotation interface supports automatic
+proposals, dark cards, single-human review and compatible reviewed exports.
+See `automatic-pilot-plan.md` for the current workflow and limits. This tooling
+does not itself establish a 1,000-example reviewed dataset in either language.

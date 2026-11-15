@@ -1,5 +1,6 @@
 """Real HTTP/store/UI with mocked paid provider in an isolated temporary workspace."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def fake_assist(example, key, provider="typesafe", model="jev-latest"):
 
 wsd.jev.assist = fake_assist
 with tempfile.TemporaryDirectory(prefix="sense-review-e2e-") as directory:
+    os.environ["SENSE_MODEL_CONFIG"] = str(Path(directory) / "config.toml")
     with AnnotationServer(("127.0.0.1", 18865), Store(Path(directory) / "workspace.sqlite")) as server:
         print("Annotation browser fixture ready", flush=True)
         server.serve_forever()

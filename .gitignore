@@ -19,3 +19,6 @@ pilot-workspace/
 
 web-tests/test-results/
 web-tests/playwright-report/
+
+# Downloaded papers, generated data, and provider responses
+data/pilot/

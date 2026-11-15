@@ -158,6 +158,13 @@ const OUTCOMES = {
   inventory_issue: "Dictionary issue",
   skip: "Skipped",
 };
+const BUCKETS = {
+  jev_high_confidence: "Jev: high confidence",
+  jev_low_codex_agreed: "Jev low confidence; Codex agreed",
+  jev_low_codex_disagreed: "Jev low confidence; Codex disagreed",
+  jev_error_codex: "Jev error; Codex labeled",
+  unresolved: "Unresolved",
+};
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = String(text);
@@ -218,6 +225,7 @@ async function action(task) {
   if (state.busy) return;
   state.busy = true;
   document.body.setAttribute("aria-busy", "true");
+  updateActions();
   try {
     await task();
   } catch (error) {
@@ -228,6 +236,10 @@ async function action(task) {
     state.busy = false;
     document.body.removeAttribute("aria-busy");
     updateActions();
+    if (state.refreshRequested) {
+      state.refreshRequested = false;
+      action(() => refreshQueue());
+    }
   }
 }
 async function refreshSession() {
@@ -242,10 +254,11 @@ function renderCredentials() {
   const key = state.credential;
   $("key-dot").textContent = key.configured ? "●" : "○";
   $("credential-status").textContent = key.configured
-    ? `Key present in session memory · ${key.provider} · ${key.model}. Connection is checked when you request a suggestion.`
+    ? `Key present ${key.persisted ? "in local config" : "in session memory"} · ${key.provider} · ${key.model}. Connection is checked when you request a suggestion.`
     : "No API key saved for this session.";
   if (key.provider) $("provider").value = key.provider;
   if (key.model) $("jev-model").value = key.model;
+  $("save-to-config").checked = Boolean(key.persisted);
   updateActions();
 }
 function normalizeSummary(row) {
@@ -272,8 +285,27 @@ async function refreshQueue(preferred = state.current) {
   const query = new URLSearchParams({
     language: $("language-filter").value,
     status: $("status-filter").value,
+    ...Object.fromEntries(
+      ["bucket", "difficulty", "area", "paper", "confidence"].map((key) => [
+        key,
+        $(key + "-filter").value,
+      ]),
+    ),
   });
-  const result = await api("/api/examples?" + query);
+  const [result, all] = await Promise.all([
+    api("/api/examples?" + query),
+    api("/api/examples"),
+  ]);
+  for (const key of ["difficulty", "area", "paper"]) {
+    const select = $(key + "-filter"),
+      selected = select.value;
+    const first = select.options[0].textContent;
+    select.replaceChildren(new Option(first, ""));
+    [...new Set(all.examples.map((row) => row[key]).filter(Boolean))]
+      .sort()
+      .forEach((value) => select.add(new Option(value, value)));
+    select.value = selected;
+  }
   state.examples = (result.examples || []).map(normalizeSummary);
   renderQueue();
   await refreshStats();
@@ -334,6 +366,8 @@ function renderQueue() {
 }
 async function selectExample(id) {
   const seq = ++state.loading;
+  if (state.examples.find((row) => row.id === id)?.automatic)
+    $("adjudication-mode").checked = false;
   const path = $("adjudication-mode").checked
     ? "/api/adjudication"
     : "/api/example";
@@ -351,6 +385,21 @@ function renderExample() {
   const detail = state.detail,
     ex = detail.example,
     p = ex.provenance || {};
+  const automatic = detail.mode === "automatic" || Boolean(p.automatic);
+  $("automatic-actions").hidden = !automatic;
+  $("automatic-evidence").hidden = !automatic;
+  $("legacy-assistance").hidden = automatic;
+  $("legacy-outcomes").hidden = automatic;
+  $("protocol-link").href =
+    `https://github.com/andrepaim/sense-model/blob/main/docs/${automatic ? "automatic-review" : "pilot-plan"}.md`;
+  $("protocol-link").textContent = automatic
+    ? "Read the review guide ↗"
+    : "Read the pilot plan ↗";
+  $("adjudication-mode").disabled = automatic;
+  $("adjudication-mode").closest("label").hidden = automatic;
+  $("selection-help").textContent = automatic
+    ? "Check every acceptable definition, or choose none fits / insufficient context. Save a correction, approve the automatic result, or reject the example."
+    : "Select every acceptable definition. The order is shuffled for your review.";
   const index = state.examples.findIndex((e) => e.id === ex.id);
   $("example-counter").textContent =
     `EXAMPLE ${String(index + 1).padStart(2, "0")} OF ${state.examples.length}`;
@@ -372,13 +421,20 @@ function renderExample() {
   clear($("source-details"));
   [
     p.source,
+    p.paper_title,
+    (p.generation?.page ?? p.page) !== undefined
+      ? `Page: ${p.generation?.page ?? p.page}`
+      : "",
+    p.generation?.difficulty ? `Difficulty: ${p.generation.difficulty}` : "",
+    p.generation?.area ? `Area: ${p.generation.area}` : "",
+    p.generation?.paper_id ? `Paper: ${p.generation.paper_id}` : "",
     p.document_id ? `Document ${p.document_id}` : "",
     p.license ? `License: ${p.license}` : "License not recorded",
     p.revision ? `Revision: ${p.revision}` : "",
   ]
     .filter(Boolean)
     .forEach((value) => $("source-details").append(element("span", value)));
-  const sourceURL = p.source_url || p.url;
+  const sourceURL = p.source_url || p.paper_url || p.url;
   if (sourceURL) {
     try {
       const url = new URL(sourceURL);
@@ -414,13 +470,22 @@ function renderExample() {
     });
     const body = element("span", undefined, "candidate-body");
     body.append(
-      element("span", `Meaning ${i + 1}`, "candidate-label"),
+      element("span", `Meaning ${i + 1} · ${candidate.id}`, "candidate-label"),
       element("span", candidate.definition, "definition"),
     );
     label.append(input, body);
     $("candidate-options").append(label);
   });
-  restoreVote(detail.my_vote);
+  restoreVote(automatic ? detail.review : detail.my_vote);
+  if (automatic) {
+    const proposal = proposalSelection(p);
+    if (!detail.review) restoreVote(proposal);
+    $("restore-initial").hidden = true;
+    $("vote-status").textContent = detail.review
+      ? `Human review saved · ${detail.review.status.replaceAll("_", " ")} · ${detail.review.reviewer}`
+      : "Unreviewed automatic proposal. Only explicit human approval or correction enters the gold export.";
+    renderAutomatic(p);
+  }
   renderAssistance(detail.assistance || []);
   renderAdjudication();
   updateActions();
@@ -457,12 +522,34 @@ function selectedOutcome() {
   };
 }
 function updateActions() {
+  for (const id of [
+    "export-button",
+    "export-all-button",
+    "backup-button",
+    "import-button",
+    "empty-import",
+    "load-demo",
+    "empty-demo",
+    "settings-button",
+    "workspace-button",
+    "random-audit",
+  ]) {
+    $(id).disabled = state.busy;
+  }
   const vote = state.detail?.my_vote;
   const named = Boolean(state.reviewer.trim());
   $("save-vote").disabled = !named || state.busy;
-  $("save-vote").textContent = vote
-    ? "Save revised review"
-    : "Save independent review";
+  const automatic = Boolean(state.detail?.example?.provenance?.automatic);
+  $("save-vote").textContent = automatic
+    ? "Save human correction"
+    : vote
+      ? "Save revised review"
+      : "Save independent review";
+  $("approve-result").disabled =
+    state.busy ||
+    !named ||
+    state.detail?.example?.provenance?.automatic?.status !== "labeled";
+  $("reject-result").disabled = state.busy || !named;
   $("assist-button").disabled =
     !vote ||
     !state.credential.configured ||
@@ -494,6 +581,8 @@ async function saveVote() {
   const selection = selectedOutcome();
   if (!selection.outcome)
     throw new Error("Choose at least one definition or a review outcome.");
+  if (state.detail.example.provenance?.automatic)
+    return saveAutomatic("correct", selection);
   await api("/api/vote", {
     id: state.current,
     ...selection,
@@ -502,6 +591,118 @@ async function saveVote() {
   });
   await refreshQueue(state.current);
   notice("Review saved. Your independent first vote remains on record.");
+}
+function proposalSelection(p) {
+  const automatic = p.automatic || {},
+    result = automatic[automatic.selected_by] || {};
+  const ids = result.selected_ids || p.proposed_gold_ids || [];
+  const choice = result.outcome || result.choice;
+  return {
+    gold_ids: ids,
+    outcome: ids.length
+      ? "selected"
+      : { none: "none_fits", insufficient: "insufficient_context" }[choice] ||
+        choice,
+  };
+}
+async function saveAutomatic(actionName, selection = selectedOutcome()) {
+  await api("/api/review", {
+    id: state.current,
+    action: actionName,
+    ...selection,
+    note: $("review-note").value,
+    expected_revision: state.detail.revision,
+  });
+  await refreshQueue(state.current);
+  notice(
+    `Human review saved · ${actionName === "approve" ? "approved" : actionName === "reject" ? "rejected" : "corrected"}. Automatic evidence is preserved.`,
+  );
+}
+function renderAutomatic(p) {
+  const node = $("automatic-evidence"),
+    a = p.automatic;
+  clear(node);
+  node.append(
+    element("span", "AUTOMATIC EVIDENCE · SILVER", "eyebrow"),
+    element("h2", "Compare the judgments"),
+    element("p", `Bucket: ${BUCKETS[a.bucket] || "Unresolved"}`),
+    element(
+      "p",
+      `Selected by: ${{ jev: "Jev", codex: "Codex" }[a.selected_by] || "Unresolved"}`,
+    ),
+  );
+  if (a.escalation_reason)
+    node.append(
+      element(
+        "p",
+        `Escalation: ${{ jev_error: "Jev request failed", jev_missing_confidence: "Jev returned no confidence", jev_low_confidence: "Jev confidence below threshold", low_confidence: "Jev confidence below threshold" }[a.escalation_reason] || a.escalation_reason.replaceAll("_", " ")}`,
+      ),
+    );
+  for (const key of ["jev", "codex"]) {
+    const result = a[key],
+      section = element("section", undefined, "judgment");
+    section.append(
+      element("h3", key === "jev" ? "Jev judgment" : "Codex judgment"),
+    );
+    if (!result)
+      section.append(
+        element(
+          "p",
+          a[key + "_error"]
+            ? `Error: ${typeof a[key + "_error"] === "string" ? a[key + "_error"] : `Request failed after ${a[key + "_error"].attempts || "unknown"} attempts`}`
+            : "Not requested / no result",
+        ),
+      );
+    else {
+      section.append(
+        element(
+          "p",
+          `Outcome: ${result.selected_ids?.length ? OUTCOMES.selected : OUTCOMES[result.outcome || result.choice] || { none: "None fits", insufficient: "Insufficient context" }[result.choice] || "Unknown"}`,
+        ),
+        element("p", `IDs: ${(result.selected_ids || []).join(", ") || "—"}`),
+      );
+      if (typeof result.confidence === "number")
+        section.append(
+          element(
+            "p",
+            `Jev confidence: ${(result.confidence * 100).toFixed(1)}% · threshold ${((a.threshold ?? 0.8) * 100).toFixed(0)}%`,
+          ),
+        );
+      if (result.rationale) section.append(element("p", result.rationale));
+      if (result.probabilities) {
+        for (const [id, probability] of Object.entries(result.probabilities))
+          section.append(
+            element(
+              "p",
+              `${id}: ${(probability * 100).toFixed(1)}%`,
+              "probability-label",
+            ),
+          );
+        for (const [key, label] of [
+          ["none_probability", "None fits"],
+          ["insufficient_probability", "Insufficient context"],
+        ]) {
+          if (typeof result[key] === "number")
+            section.append(
+              element(
+                "p",
+                `${label}: ${(result[key] * 100).toFixed(1)}%`,
+                "probability-label",
+              ),
+            );
+        }
+      }
+    }
+    node.append(section);
+  }
+  if (p.proposed_gold_ids)
+    node.append(
+      element(
+        "p",
+        `Original proposed IDs: ${p.proposed_gold_ids.join(", ") || "none fits"}`,
+        "ai-meta",
+      ),
+    );
 }
 function renderAssistance(results) {
   clear($("ai-results"));
@@ -662,6 +863,55 @@ function languageCounts(stats, language) {
 }
 async function refreshStats() {
   state.stats = await api("/api/stats");
+  const audit = state.stats.automatic_review;
+  const dashboard = $("automatic-dashboard");
+  dashboard.hidden = !audit?.total;
+  document.querySelector(".progress-strip").hidden = Boolean(audit?.total);
+  clear(dashboard);
+  if (audit?.total) {
+    const top = element("div", undefined, "dashboard-top");
+    top.append(
+      element("span", "AUTOMATIC LABEL AUDIT", "eyebrow"),
+      element("h2", `${audit.reviewed} / ${audit.total} reviewed`),
+      element(
+        "p",
+        `${audit.accepted} human-approved · ${audit.unreviewed} awaiting review`,
+      ),
+    );
+    const reportButton = element("button", "Workspace report ↗", "text-button");
+    reportButton.addEventListener("click", report);
+    top.append(reportButton);
+    dashboard.append(top);
+    const table = element("table");
+    const header = element("tr");
+    [
+      "Jev confidence",
+      "Reviewed",
+      "Comparable",
+      "Correct",
+      "Observed accuracy",
+    ].forEach((label) => header.append(element("th", label)));
+    const head = element("thead"),
+      body = element("tbody");
+    head.append(header);
+    table.append(head, body);
+    for (const [band, counts] of Object.entries(
+      audit.by_confidence || {},
+    ).sort()) {
+      const row = element("tr");
+      [
+        band,
+        counts.reviewed,
+        counts.comparable,
+        counts.correct,
+        counts.accuracy === null
+          ? "—"
+          : `${(counts.accuracy * 100).toFixed(1)}%`,
+      ].forEach((value) => row.append(element("td", value)));
+      body.append(row);
+    }
+    dashboard.append(table, element("p", audit.note, "ai-meta"));
+  }
   for (const language of ["en", "pt"]) {
     const count = languageCounts(state.stats, language);
     $(language + "-count").textContent = `${count} / 100`;
@@ -690,7 +940,7 @@ async function importExamples(examples, demo = false) {
   const result = await api("/api/import", { examples, demo });
   await refreshQueue();
   notice(
-    `Imported ${examples.length} ${demo ? "demo " : ""}candidate records. ${demo ? "These are synthetic demonstrations, excluded from real gold exports." : "Incoming gold labels are hidden; collect independent reviews."}`,
+    `Imported ${examples.length} ${demo ? "demo " : ""}candidate records. ${demo ? "These are synthetic demonstrations, excluded from real gold exports." : examples.some((ex) => ex.provenance?.automatic) ? "Automatic proposals are visible and preserved separately from human-approved labels." : "Incoming gold labels are hidden; collect independent reviews."}`,
   );
   return result;
 }
@@ -720,11 +970,11 @@ async function importFile(file) {
   }
   await importExamples(examples);
 }
-async function exportGold() {
-  const result = await api("/api/export", { include_demo: false });
+async function exportGold(scope = "gold") {
+  const result = await api("/api/export", { include_demo: false, scope });
   const examples = result.examples || [];
   download(
-    "pilot-gold.jsonl",
+    scope === "all" ? "review-all-with-status.jsonl" : "pilot-gold.jsonl",
     result.jsonl ??
       examples.map((ex) => JSON.stringify(ex)).join("\n") +
         (examples.length ? "\n" : ""),
@@ -735,7 +985,9 @@ async function exportGold() {
     JSON.stringify(result.manifest || {}, null, 2),
   );
   notice(
-    `Exported ${examples.length} reviewed gold records and the manifest. Demo and unresolved records are excluded.`,
+    scope === "all"
+      ? `Exported ${examples.length} records with review status and preserved automatic evidence.`
+      : `Exported ${examples.length} reviewed gold records and the manifest. Demo and unresolved records are excluded.`,
   );
 }
 function report() {
@@ -764,6 +1016,33 @@ function move(delta) {
   if (next) action(() => selectExample(next.id));
 }
 function initEvents() {
+  $("random-audit").addEventListener("click", () =>
+    action(async () => {
+      const query = new URLSearchParams({
+        status: "unreviewed",
+        bucket: "jev_high_confidence",
+        language: $("language-filter").value,
+        ...Object.fromEntries(
+          ["difficulty", "area", "paper"].map((key) => [
+            key,
+            $(key + "-filter").value,
+          ]),
+        ),
+      });
+      const { examples } = await api("/api/examples?" + query);
+      if (!examples.length)
+        throw new Error(
+          "No unreviewed high-confidence examples match the language, difficulty, area and paper filters.",
+        );
+      $("bucket-filter").value = "jev_high_confidence";
+      $("status-filter").value = "unreviewed";
+      $("confidence-filter").value = "";
+      await refreshQueue(
+        examples[Math.floor(Math.random() * examples.length)].id,
+      );
+      notice("Random unreviewed high-confidence example opened for audit.");
+    }),
+  );
   $("reviewer-form").addEventListener("submit", (event) => {
     event.preventDefault();
     action(async () => {
@@ -778,8 +1057,19 @@ function initEvents() {
       );
     });
   });
-  ["language-filter", "status-filter"].forEach((id) =>
-    $(id).addEventListener("change", () => action(() => refreshQueue())),
+  [
+    "language-filter",
+    "status-filter",
+    "bucket-filter",
+    "difficulty-filter",
+    "area-filter",
+    "paper-filter",
+    "confidence-filter",
+  ].forEach((id) =>
+    $(id).addEventListener("change", () => {
+      if (state.busy) state.refreshRequested = true;
+      else action(() => refreshQueue());
+    }),
   );
   $("vote-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -840,11 +1130,14 @@ function initEvents() {
         key,
         provider: $("provider").value,
         model: $("jev-model").value.trim(),
+        save_to_config: $("save-to-config").checked,
       });
       await refreshSession();
       $("settings-dialog").close();
       notice(
-        "API key saved for this session only. No provider request has been made.",
+        state.credential.persisted
+          ? "API key saved to local owner-only config. No provider request has been made."
+          : "API key saved for this session only. No provider request has been made.",
       );
     });
   });
@@ -888,6 +1181,15 @@ function initEvents() {
   $("previous-example").addEventListener("click", () => move(-1));
   $("next-example").addEventListener("click", () => move(1));
   $("export-button").addEventListener("click", () => action(exportGold));
+  $("export-all-button").addEventListener("click", () =>
+    action(() => exportGold("all")),
+  );
+  $("approve-result").addEventListener("click", () =>
+    action(() => saveAutomatic("approve")),
+  );
+  $("reject-result").addEventListener("click", () =>
+    action(() => saveAutomatic("reject")),
+  );
   $("backup-button").addEventListener("click", () =>
     action(async () => {
       download(

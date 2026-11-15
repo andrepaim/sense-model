@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sense Model · Annotation studio</title>
+    <title>Sense Model · Review studio</title>
     <link rel="stylesheet" href="/style.css" />
     <script src="/app.js" defer></script>
   </head>
@@ -11,7 +11,7 @@
     <header class="topbar">
       <a class="brand" href="/" aria-label="Sense Model annotation studio"
         ><span class="brandmark" aria-hidden="true">s<span>m</span></span
-        ><span>Sense Model <small>Annotation studio</small></span></a
+        ><span>Sense Model <small>Review studio</small></span></a
       >
       <div class="header-actions">
         <span class="local-badge"><i></i> Local workspace</span
@@ -23,9 +23,12 @@
     <div class="app-shell">
       <aside class="sidebar" aria-label="Review queue">
         <div class="sidebar-heading">
-          <span class="eyebrow">PILOT 01</span>
-          <h1>A meaning,<br />in context.</h1>
-          <p>Build a careful English and Portuguese evaluation set.</p>
+          <span class="eyebrow">AUTOMATIC LABEL AUDIT</span>
+          <h1>Every meaning,<br />with evidence.</h1>
+          <p>
+            Audit automatic labels. Approve, correct, or keep uncertainty
+            visible.
+          </p>
         </div>
         <div class="reviewer-block">
           <label for="reviewer-name">Reviewing as</label>
@@ -60,11 +63,49 @@
           ><label for="status-filter" class="sr-only">Filter status</label
           ><select id="status-filter">
             <option value="">All examples</option>
-            <option value="pending">Not reviewed by me</option>
-            <option value="reviewed">Reviewed by me</option>
+            <option value="unreviewed">Unreviewed</option>
+            <option value="pending">Legacy: pending independent review</option>
+            <option value="reviewed">Reviewed</option>
             <option value="disagreement">Needs adjudication</option>
             <option value="adjudicated">Adjudicated</option>
           </select>
+          <label class="sr-only" for="bucket-filter"
+            >Automatic label bucket</label
+          >
+          <select id="bucket-filter">
+            <option value="">All automatic buckets</option>
+            <option value="jev_high_confidence">Jev · high confidence</option>
+            <option value="jev_low_codex_agreed">
+              Low confidence · Codex agreed
+            </option>
+            <option value="jev_low_codex_disagreed">
+              Low confidence · Codex disagreed
+            </option>
+            <option value="jev_error_codex">Jev error · Codex labeled</option>
+            <option value="unresolved">Unresolved</option>
+          </select>
+          <label class="sr-only" for="difficulty-filter">Difficulty</label
+          ><select id="difficulty-filter">
+            <option value="">All difficulties</option>
+          </select>
+          <label class="sr-only" for="area-filter">Area</label
+          ><select id="area-filter">
+            <option value="">All areas</option>
+          </select>
+          <label class="sr-only" for="paper-filter">Paper</label
+          ><select id="paper-filter">
+            <option value="">All papers</option>
+          </select>
+          <label class="sr-only" for="confidence-filter">Jev confidence</label
+          ><select id="confidence-filter">
+            <option value="">All confidence levels</option>
+            <option value="high">At / above threshold</option>
+            <option value="low">Below threshold</option>
+            <option value="unknown">No Jev score</option>
+          </select>
+          <button id="random-audit" class="button secondary" type="button">
+            Audit random high confidence
+          </button>
         </div>
         <div class="queue-title">
           <h2>Review queue</h2>
@@ -113,15 +154,21 @@
             Workspace report ↗
           </button>
         </section>
+        <section
+          id="automatic-dashboard"
+          class="dashboard"
+          hidden
+          aria-label="Automatic review dashboard"
+        ></section>
         <div id="notice" role="status" aria-live="polite" hidden></div>
         <section id="empty-state" class="empty-state">
           <div class="empty-symbol" aria-hidden="true">“a”</div>
           <span class="eyebrow">START WITH THE TEXT</span>
-          <h2>Good labels start<br />with an independent reading.</h2>
+          <h2>Automatic labels.<br />Human judgment.</h2>
           <p>
             Import candidate examples from your collection pipeline, choose a
-            reviewer name, and read the sentence before asking Jev for a second
-            opinion.
+            reviewer name, and inspect automatic evidence alongside each
+            definition.
           </p>
           <button id="empty-import" class="button primary">
             Import JSONL examples</button
@@ -175,7 +222,7 @@
                   <span class="step-number">02</span>
                   <h2 id="meaning-title">Which meaning fits?</h2>
                 </div>
-                <p class="section-help">
+                <p id="selection-help" class="section-help">
                   Select every acceptable definition. The order is shuffled for
                   your review.
                 </p>
@@ -207,7 +254,7 @@
                         ></span
                       ></label
                     >
-                    <details>
+                    <details id="legacy-outcomes">
                       <summary>Extraction, inventory, or skip</summary>
                       <label
                         ><input
@@ -246,6 +293,22 @@
                     placeholder="Record a sense distinction, ambiguity, or source problem…"
                   ></textarea>
                   <div id="vote-status" class="vote-status"></div>
+                  <div id="automatic-actions" class="save-row" hidden>
+                    <button
+                      id="approve-result"
+                      class="button primary"
+                      type="button"
+                    >
+                      Approve automatic label
+                    </button>
+                    <button
+                      id="reject-result"
+                      class="button secondary"
+                      type="button"
+                    >
+                      Reject example
+                    </button>
+                  </div>
                   <div class="save-row">
                     <button id="save-vote" class="button primary" type="submit">
                       Save independent review</button
@@ -282,7 +345,13 @@
               </section>
             </div>
             <aside class="assistance-column" aria-label="AI assistance">
-              <section class="assistance-card">
+              <section
+                id="automatic-evidence"
+                class="assistance-card"
+                hidden
+                aria-label="Automatic evidence"
+              ></section>
+              <section id="legacy-assistance" class="assistance-card">
                 <div class="ai-heading">
                   <span class="ai-icon" aria-hidden="true">✳</span>
                   <div>
@@ -329,6 +398,7 @@
                   means you cannot decide. They are different outcomes.
                 </p>
                 <a
+                  id="protocol-link"
                   href="https://github.com/andrepaim/sense-model/blob/main/docs/pilot-plan.md"
                   target="_blank"
                   rel="noreferrer"
@@ -345,7 +415,9 @@
           >
           <div>
             <button id="export-button" class="text-button">
-              Export reviewed gold ↓</button
+              Export human-approved gold ↓</button
+            ><button id="export-all-button" class="text-button">
+              Export all with status ↓</button
             ><button id="backup-button" class="text-button">
               Download workspace backup ↓
             </button>
@@ -369,10 +441,7 @@
             ×
           </button>
         </div>
-        <p>
-          Enter a provider key to request a second opinion after saving your
-          independent review.
-        </p>
+        <p>Configure Jev for optional suggestions and future labeling runs.</p>
         <label for="provider" class="field-label">API provider</label
         ><select id="provider">
           <option value="typesafe">TypeSafe · direct API</option>
@@ -393,16 +462,21 @@
           spellcheck="false"
           maxlength="4096"
         />
+        <label class="config-choice"
+          ><input id="save-to-config" type="checkbox" /> Save key to local
+          config for future runs</label
+        >
         <p class="key-notice">
-          The key stays in this browser session’s server memory. It is never
-          saved to the workspace, browser storage, logs, or exports. Restarting
-          the server or clearing the key removes it.
+          By default the key stays in server session memory. Opt in above to
+          save it to ~/.config/sense-model/config.toml with owner-only
+          permissions. The saved key is never returned to the browser or
+          included in exports.
         </p>
         <div id="credential-status" role="status"></div>
         <div class="dialog-actions">
           <button type="button" id="clear-key" class="button secondary">
             Clear saved key</button
-          ><button class="button primary">Save for this session</button>
+          ><button class="button primary">Save settings</button>
         </div>
       </form>
     </dialog>
@@ -410,15 +484,16 @@
       <div class="dialog-heading">
         <div>
           <span class="eyebrow">WORKSPACE</span>
-          <h2 id="report-title">Pilot report</h2>
+          <h2 id="report-title">Review report</h2>
         </div>
         <button id="close-report" class="icon-button" aria-label="Close report">
           ×
         </button>
       </div>
       <p>
-        Counts below describe annotation progress, not model accuracy. Real
-        exports require two independent reviews and explicit adjudication.
+        Automatic proposals need one human approval or correction to enter the
+        gold export. Observed accuracy describes only the reviewed sample.
+        Legacy independent-review examples retain their original protocol.
       </p>
       <div id="report-content"></div>
       <button id="download-report" class="button secondary">

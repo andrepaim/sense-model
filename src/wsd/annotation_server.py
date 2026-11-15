@@ -45,6 +45,9 @@ class AnnotationServer(ThreadingHTTPServer):
                 del self.sessions[key]
                 self.assist_cache = {k: v for k, v in self.assist_cache.items() if k[0] != expired_csrf}
             if token not in self.sessions:
+                from .pipeline import load_config
+
+                configured = load_config().get("jev", {})
                 if len(self.sessions) >= 256:
                     oldest = min(self.sessions, key=lambda k: self.sessions[k]["touched"])
                     expired_csrf = self.sessions.pop(oldest)["csrf"]
@@ -53,9 +56,10 @@ class AnnotationServer(ThreadingHTTPServer):
                 self.sessions[token] = dict(
                     csrf=secrets.token_urlsafe(32),
                     reviewer="",
-                    key=None,
-                    provider="typesafe",
-                    model="jev-latest",
+                    key=configured.get("api_key") or None,
+                    provider=configured.get("provider", "typesafe"),
+                    model=configured.get("model", "jev-latest"),
+                    persisted=bool(configured.get("api_key")),
                     credential_revision=0,
                     touched=now,
                 )
@@ -150,7 +154,10 @@ class Handler(BaseHTTPRequestHandler):
                         csrf=session["csrf"],
                         reviewer=session["reviewer"],
                         credential=dict(
-                            configured=bool(session["key"]), provider=session["provider"], model=session["model"]
+                            configured=bool(session["key"]),
+                            provider=session["provider"],
+                            model=session["model"],
+                            persisted=session["persisted"],
                         ),
                     ),
                     cookie=token,
@@ -164,7 +171,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond({"reviewer": reviewer})
             if path == "/api/key":
                 if method == "DELETE":
+                    from .pipeline import load_config, save_config
+
+                    config = load_config()
+                    if config.setdefault("jev", {}).get("api_key"):
+                        config["jev"]["api_key"] = ""
+                        save_config(config)
                     session["key"] = None
+                    session["persisted"] = False
                     session["credential_revision"] += 1
                     self.server.assist_cache = {
                         k: v for k, v in self.server.assist_cache.items() if k[0] != session["csrf"]
@@ -182,12 +196,24 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("Enter a model identifier")
                     if any(ord(c) < 33 or ord(c) > 126 for c in key.strip()):
                         raise ValueError("Invalid API key format")
+                    persist = body.get("save_to_config", False)
+                    if type(persist) is not bool:
+                        raise ValueError("save_to_config must be boolean")
+                    if persist:
+                        from .pipeline import load_config, save_config
+
+                        config = load_config()
+                        config.setdefault("jev", {}).update(api_key=key.strip(), provider=provider, model=model)
+                        save_config(config)
                     session.update(key=key.strip(), provider=provider, model=model)
+                    session["persisted"] = persist
                     session["credential_revision"] += 1
                     self.server.assist_cache = {
                         k: v for k, v in self.server.assist_cache.items() if k[0] != session["csrf"]
                     }
-                    return self._respond({"configured": True, "provider": provider, "model": model})
+                    return self._respond(
+                        {"configured": True, "provider": provider, "model": model, "persisted": persist}
+                    )
             reviewer = session["reviewer"]
             if not reviewer:
                 raise PermissionError("Set a reviewer name first")
@@ -197,7 +223,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(
                     {
                         "examples": store.list_examples(
-                            reviewer, query.get("language", [""])[0], query.get("status", [""])[0]
+                            reviewer,
+                            query.get("language", [""])[0],
+                            query.get("status", [""])[0],
+                            **{
+                                key: query.get(key, [""])[0]
+                                for key in ("bucket", "difficulty", "area", "paper", "confidence")
+                            },
                         )
                     }
                 )
@@ -232,11 +264,27 @@ class Handler(BaseHTTPRequestHandler):
                         expected_revision=body["expected_revision"],
                     )
                 )
+            if method == "POST" and path == "/api/review":
+                return self._respond(
+                    store.review(
+                        body["id"],
+                        reviewer,
+                        body["action"],
+                        body.get("outcome"),
+                        body.get("gold_ids"),
+                        body.get("note", ""),
+                        body["expected_revision"],
+                    )
+                )
             if method == "POST" and path == "/api/assist":
                 return self._respond(self._assist(body, session))
             if method == "POST" and path == "/api/export":
-                store.assert_disclosure_allowed(reviewer, include_demo=bool(body.get("include_demo", False)))
-                return self._respond(store.export_gold(include_demo=bool(body.get("include_demo", False))))
+                all_status = body.get("scope") == "all"
+                store.assert_disclosure_allowed(
+                    reviewer, backup=all_status, include_demo=bool(body.get("include_demo", False))
+                )
+                export = store.export_all if all_status else store.export_gold
+                return self._respond(export(include_demo=bool(body.get("include_demo", False))))
             if method == "POST" and path == "/api/backup":
                 store.assert_disclosure_allowed(reviewer, backup=True)
                 return self._respond(store.backup())

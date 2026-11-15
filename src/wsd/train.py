@@ -207,6 +207,9 @@ def parse_args(argv=None):
     parser.add_argument("--separator")
     parser.add_argument("--report-to", default="none")
     parser.add_argument("--bf16", action="store_true")
+    parser.add_argument(
+        "--allow-silver", action="store_true", help="Explicitly allow automatic labels in training only"
+    )
     allowed = {a.dest for a in parser._actions}
     unknown = set(config) - allowed
     if unknown:
@@ -240,8 +243,12 @@ def main(argv=None):
             if previous_manifest["splits"].get(name, {}).get("sha256") != info["sha256"]:
                 raise ValueError(f"Resume dataset changed: {name}")
     train, dev = read_jsonl(args.train), read_jsonl(args.dev)
-    if any(ex.provenance.get("review_status") == "unreviewed" for ex in train + dev):
-        raise ValueError("Unreviewed generated examples must be reviewed before training")
+    from wsd.pipeline import require_reviewed
+
+    require_reviewed(train, allow_silver=args.allow_silver)
+    require_reviewed(dev)
+    if args.calibration:
+        require_reviewed(read_jsonl(args.calibration))
     if not train or not dev:
         raise ValueError("Training and development files must be nonempty")
     if any(ex.gold_ids is None for ex in dev):

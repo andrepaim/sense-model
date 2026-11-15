@@ -13,6 +13,7 @@ dependencies = ["torch>=2.6", "transformers>=5.0,<6", "numpy>=1.26", "huggingfac
 [project.optional-dependencies]
 train = ["accelerate>=1.0"]
 prepare = ["wn>=0.13"]
+pilot = ["pypdf>=5"]
 export = ["onnx>=1.17", "onnxruntime>=1.20", "onnxscript>=0.3"]
 dev = ["pytest>=8", "ruff>=0.11"]
 

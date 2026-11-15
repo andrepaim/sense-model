@@ -6,7 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync --frozen --extra train --extra export --extra dev
+      - run: uv sync --frozen --extra train --extra export --extra dev --extra pilot
       - run: uv run ruff check src tests scripts
       - run: uv run pytest -q
       - uses: actions/setup-node@v4

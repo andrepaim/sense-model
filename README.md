@@ -70,24 +70,41 @@ See [data preparation](docs/data.md), [training](docs/training.md),
 [implementation status](docs/status.md) and [Portuguese training smoke receipt](docs/portuguese-smoke.md). Configuration examples live in `configs`.
 Small authored smoke examples are tests of software mechanics, not a benchmark.
 
-## Build the evaluation pilot
-
-Run the local annotation interface:
+## Build and review an automatic dataset
 
 ```sh
-uv run wsd annotate --open
+uv sync --extra pilot --extra train --extra export --extra dev
+uv run wsd config init
+# Set jev.api_key in ~/.config/sense-model/config.toml.
+# Scholar discovery additionally needs generation.scholar_api_key (SerpAPI).
+uv run wsd generate --help
+uv run wsd label --help
+uv run wsd annotate --import-file data/pilot/en/labeled/samples.jsonl --open
 ```
 
-It supports independent reviews, optional Jev assistance with a session-only API
-key field, disagreement adjudication, provenance and gold exports. No model is
-loaded by the review server. Default workspace: `.annotation/workspace.sqlite`.
-The target is 100 reviewed natural examples per language; authored demo records
-are explicitly excluded from real exports.
+The generator selects authentic paper passages with local Codex and attaches
+pinned dictionary meanings. The labeler calls Jev for every example, then asks
+Codex to independently check low/missing-confidence results or failed requests.
+The default CLI model is `gpt-6-luna`; both scripts accept an override. Local
+Codex uses hosted inference through your existing CLI login, not offline inference.
 
-Read the [full pilot plan](docs/pilot-plan.md), [operator guide](docs/pilot-guide.md),
-and [candidate collection workflow](docs/pilot-collection.md). `wsd pilot collect`
-prepares unlabeled candidates from local licensed documents and pinned inventories.
-Jev requests are explicit and billed by your provider. No API key belongs in Git.
+Review automatic proposals in dark cards, filter by confidence and disagreement,
+correct or approve them, and export the same JSONL format with human labels.
+The local server loads no WSD weights. Default workspace:
+`.annotation/workspace.sqlite`. API keys stay in private local configuration.
+
+Read the [automatic pilot plan](docs/automatic-pilot-plan.md),
+[generation guide](docs/dataset-generation.md),
+[labeling guide](docs/dataset-labeling.md), and
+[review guide](docs/automatic-review.md). See the
+[verification receipt](docs/automatic-pilot-verification.md) for tested behavior
+and the dark-interface screenshot.
+The two standalone entry points are `scripts/generate_dataset.py` and
+`scripts/label_dataset.py`; `wsd generate` and `wsd label` call the same code.
+Automatic labels are silver: evaluation requires review; training on silver data
+requires an explicit `--allow-silver`. Downloaded papers and generated datasets
+are excluded from Git. The older manual `wsd pilot collect/audit` workflow and
+independent-review annotation mode remain available for existing datasets.
 
 ## Portuguese
 
