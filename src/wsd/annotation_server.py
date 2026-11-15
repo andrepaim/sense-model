@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .pipeline import load_config
 from .schema import Example
 
 MAX_BODY = 8 * 1024 * 1024
@@ -329,10 +330,16 @@ class Handler(BaseHTTPRequestHandler):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path(".annotation/workspace.sqlite"))
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int)
     parser.add_argument("--import-file", type=Path)
     parser.add_argument("--open", action="store_true")
     args = parser.parse_args(argv)
+    settings = load_config().get("review", {})
+    if settings.get("host", "127.0.0.1") != "127.0.0.1":
+        parser.error("The review server must bind to 127.0.0.1")
+    args.port = args.port if args.port is not None else settings.get("port", 8765)
+    if type(args.port) is not int or not 0 <= args.port <= 65535:
+        parser.error("Review port must be between 0 and 65535")
     from .annotation_store import Store
 
     store = Store(args.workspace)

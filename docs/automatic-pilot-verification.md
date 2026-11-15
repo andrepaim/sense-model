@@ -3,7 +3,7 @@
 This receipt records software behavior, not benchmark accuracy or dataset quality.
 The examples used in automated and live smoke checks are authored software fixtures.
 
-Final local checks: **134 Python tests passed**, both Playwright browser tests
+Final local checks: **135 Python tests passed**, both Playwright browser tests
 passed, Ruff/lock/diff checks passed. Node checks passed (2 tests; the optional
 artifact parity check was skipped without its fixture). Existing ONNX export
 deprecation/tracing warnings remain.

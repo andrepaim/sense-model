@@ -198,3 +198,30 @@ def test_explicit_config_key_persistence_never_discloses_secret(api, monkeypatch
     assert secret not in json.dumps(client.call("POST", "/api/backup", {})[1])
     assert client.call("DELETE", "/api/key")[0] == 200
     assert not load_config()["jev"]["api_key"]
+
+
+def test_cli_port_defaults_to_local_config_and_cli_overrides(tmp_path, monkeypatch):
+    from wsd import annotation_server
+
+    ports = []
+    monkeypatch.setattr(annotation_server, "load_config", lambda: {"review": {"host": "127.0.0.1", "port": 9876}})
+
+    class FakeServer:
+        def __init__(self, address, store):
+            self.server_address = address
+            self.sessions, self.assist_cache = {}, {}
+            ports.append(address[1])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def serve_forever(self):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(annotation_server, "AnnotationServer", FakeServer)
+    annotation_server.main(["--workspace", str(tmp_path / "review.sqlite")])
+    annotation_server.main(["--workspace", str(tmp_path / "review.sqlite"), "--port", "8767"])
+    assert ports == [9876, 8767]

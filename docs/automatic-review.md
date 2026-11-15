@@ -2,6 +2,8 @@
 
 Start the local workspace with `wsd annotate --workspace .annotation/workspace.sqlite --import-file path/to/labeled.jsonl` (or use the existing annotation server entry point). Import JSONL through the browser to add further batches. The web UI and SQLite workspace run on the local workstation; reviewers are workflow names, not authentication accounts. Optional Jev assistance sends context and definitions to the configured provider. The labeling pipeline likewise uses hosted Jev and Codex inference.
 
+The server uses `[review].port` from local configuration (default 8765); `--port` overrides it. It binds only to `127.0.0.1`.
+
 Rows containing `provenance.automatic` open in automatic audit mode. Jev's original outcome, candidate probabilities, confidence, escalation reason, and Codex's outcome and rationale are immediately visible. The automatic evidence is immutable in the workspace. Incoming proposed `gold_ids` are preserved as `provenance.proposed_gold_ids`; they do not become human gold during import. Reimporting an identical batch is idempotent; changing content under an existing example ID is rejected atomically. Importing previously reviewed data archives its review as `previous_review` and starts a fresh workspace review.
 
 One named reviewer can:
