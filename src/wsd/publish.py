@@ -8,7 +8,7 @@ import json
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REQUIRED = (
     "README.md",
@@ -143,50 +143,67 @@ def assemble_release(release, artifact, *, export=None, training_config=None, da
     export = source(config.get("export"), export)
     if export is None:
         raise ValueError("The release needs an export folder (--export)")
+    names = [*config["files"], *config.get("release_files", {})]
+    if config.get("recipe"):
+        names.append(config["recipe"].get("to", "onnx/recipe.json"))
+    for name in names:
+        inside = PurePosixPath(name)
+        if not name or inside.is_absolute() or ".." in inside.parts or "\\" in name:
+            raise ValueError(f"Release file name {name!r} is outside the artifact folder")
     artifact = Path(artifact)
     if artifact.exists() and any(artifact.iterdir()):
         raise ValueError("Release artifact directory must be empty")
-    artifact.mkdir(parents=True, exist_ok=True)
-    for name in config["files"]:
-        (artifact / name).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(export / name, artifact / name)
-    for name, path in config.get("release_files", {}).items():
-        shutil.copyfile(source(path, None), artifact / name)
-    for key, name in (("card", "README.md"), ("license", "LICENSE"), ("notice", "NOTICE")):
-        shutil.copyfile(source(config[key], None), artifact / name)
-    recipe = None
-    if config.get("recipe"):
-        recipe = json.loads((export / config["recipe"].get("from", "recipe.json")).read_text(encoding="utf-8"))
-        if "model" in config["recipe"]:
-            recipe["model"] = config["recipe"]["model"]
-        target = artifact / config["recipe"].get("to", "onnx/recipe.json")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(recipe, indent=1) + "\n", encoding="utf-8")
-    metadata = json.loads((export / "model_metadata.json").read_text(encoding="utf-8"))
-    metadata.pop("export", None)
-    for key, value in config.get("metadata", {}).items():
-        if key == "model_revision" and value == "weights":
-            value = "sha256:" + checksum(artifact / "model.safetensors")
-        metadata[key] = value
-    if recipe is not None:
-        metadata["export"] = describe_recipe(recipe)
-    (artifact / "model_metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    for name, value, override in (
-        ("training_config.json", config.get("training_config"), training_config),
-        ("data_manifest.json", config.get("data_manifest"), data_manifest),
-    ):
-        path = source(value, override)
-        if path is not None:
-            shutil.copyfile(path, artifact / name)
-    if evaluation is not None:
-        reports = {name: Path(path) for name, path in evaluation.items()}
-    else:
-        reports = {name: source(path, None) for name, path in config.get("evaluation", {}).items()}
-    if reports:
-        merged = {name: json.loads(path.read_text(encoding="utf-8")) for name, path in reports.items()}
-        (artifact / "evaluation.json").write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    # Built in a temporary folder beside the artifact and moved into place, so a failure leaves nothing behind.
+    staging = Path(tempfile.mkdtemp(prefix=f".{artifact.name}.", dir=artifact.parent))
+    try:
+        for name in config["files"]:
+            (staging / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(export / name, staging / name)
+        for name, path in config.get("release_files", {}).items():
+            (staging / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source(path, None), staging / name)
+        for key, name in (("card", "README.md"), ("license", "LICENSE"), ("notice", "NOTICE")):
+            shutil.copyfile(source(config[key], None), staging / name)
+        recipe = None
+        if config.get("recipe"):
+            recipe = json.loads((export / config["recipe"].get("from", "recipe.json")).read_text(encoding="utf-8"))
+            if "model" in config["recipe"]:
+                recipe["model"] = config["recipe"]["model"]
+            target = staging / config["recipe"].get("to", "onnx/recipe.json")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(recipe, indent=1) + "\n", encoding="utf-8")
+        metadata = json.loads((export / "model_metadata.json").read_text(encoding="utf-8"))
+        metadata.pop("export", None)
+        for key, value in config.get("metadata", {}).items():
+            if key == "model_revision" and value == "weights":
+                value = "sha256:" + checksum(staging / "model.safetensors")
+            metadata[key] = value
+        if recipe is not None:
+            metadata["export"] = describe_recipe(recipe)
+        (staging / "model_metadata.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        for name, value, override in (
+            ("training_config.json", config.get("training_config"), training_config),
+            ("data_manifest.json", config.get("data_manifest"), data_manifest),
+        ):
+            path = source(value, override)
+            if path is not None:
+                shutil.copyfile(path, staging / name)
+        if evaluation is not None:
+            reports = {name: Path(path) for name, path in evaluation.items()}
+        else:
+            reports = {name: source(path, None) for name, path in config.get("evaluation", {}).items()}
+        if reports:
+            merged = {name: json.loads(path.read_text(encoding="utf-8")) for name, path in reports.items()}
+            (staging / "evaluation.json").write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if artifact.exists():
+        artifact.rmdir()
+    staging.rename(artifact)
     return artifact
 
 
