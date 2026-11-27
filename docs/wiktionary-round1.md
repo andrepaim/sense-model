@@ -201,7 +201,12 @@ curves stay on the maintainer's machine.
   (`validate_splits`, normalized passage equality and a five-word-shingle Jaccard of at least 0.8 for passages of 15
   words or more) finds 758 findings between the training files and the two development forms, 90 equal passages and
   668 near duplicates. They involve 232 of the 4,931 development items (451 development examples across the two forms)
-  and 317 training items (341 training examples): the same quotation filed under another headword. The development numbers may be somewhat optimistic; the choice between runs was made on them. The
+  and 317 training items (341 training examples): the same quotation filed under another headword. The 232
+  development item IDs are `reports/dev-train-overlap-items.txt` in the dataset's revision
+  [`e1daff12f44efb55f74b236b492f755dcc04149b`](https://huggingface.co/datasets/andrepaim/wiktionary-wsd/tree/e1daff12f44efb55f74b236b492f755dcc04149b),
+  which changes only the dataset's card and scripts and adds that list (every data file is byte for byte the one of
+  `84b6444e`, the revision the configurations pin); give it to `wsd rank --exclude` together with
+  `reports/excluded-overlap-ids.txt` to count development without them. The development numbers may be somewhat optimistic; the choice between runs was made on them. The
   configurations set `allow_split_overlap`, so a run records these findings in its `data_manifest.json` instead of
   stopping.
 - One seed per run, one machine.
