@@ -422,6 +422,19 @@ def _data_path(args, path):
     return str(Path(args.data_dir) / path)
 
 
+def _relative_paths(node, folder):
+    """Record the paths of a data manifest relative to the data folder."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "path" and isinstance(value, str) and Path(value).is_relative_to(folder):
+                node[key] = str(Path(value).relative_to(folder))
+            else:
+                _relative_paths(value, folder)
+    elif isinstance(node, list):
+        for value in node:
+            _relative_paths(value, folder)
+
+
 def main(argv=None):
     args = parse_args(argv)
     set_seed(args.seed)
@@ -524,6 +537,8 @@ def main(argv=None):
     (output / "resolved_config.json").write_text(json.dumps(resolved, indent=2) + "\n", encoding="utf-8")
     if teacher_scores:
         manifest["teacher_scores"] = {"sha256": file_sha256(teacher_scores), "path": teacher_scores}
+    if args.data_dir:
+        _relative_paths(manifest, Path(args.data_dir))
     (output / "data_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     try:
         git_commit = subprocess.run(
