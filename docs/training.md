@@ -4,6 +4,8 @@ Use `wsd train --config configs/english_baseline.json`. Configuration paths are 
 
 Candidate order is shuffled once deterministically per run. Training uses the same prompt construction and valid candidate/rejection slots as inference. The loss marginalizes all acceptable gold definitions; none-fits labels supervise the rejection slot. Optional label smoothing is applied only over valid slots. Development accuracy likewise considers valid slots. Best checkpoint selection uses development accuracy, and early stopping uses `--patience` evaluation events. `--save-steps` controls saving/evaluation; use 1 for tiny smoke runs. Change one variable per experiment, repeat seeds for finalists, and keep test held out.
 
+`--grad-accum N` divides each micro-batch's mean loss by N, so the logged loss and the gradient equal those of one batch of `--batch-size` times N. Gradients are clipped to norm 1.0 (the Trainer default) and the optimizer is AdamW (the Trainer default). Before this was fixed, runs with `--grad-accum` above 1, such as `configs/english_baseline.json` (8), logged losses and gradient norms N times too large. AdamW's update is largely insensitive to a constant gradient scale, so the main effect on the weights came through clipping: the inflated norm crossed 1.0 on steps whose true norm did not, and those steps were scaled down relative to the others. Such runs are not comparable to runs made after the fix.
+
 ```sh
 wsd train --config configs/portuguese_pilot.json --max-steps 10 --save-steps 5
 wsd train --config configs/portuguese_pilot.json --resume runs/portuguese-pilot/checkpoints/checkpoint-5

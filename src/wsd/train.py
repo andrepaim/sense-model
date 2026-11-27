@@ -150,8 +150,17 @@ def choice_loss(
 
 
 class ChoiceTrainer(Trainer):
+    # compute_loss returns the mean over one micro-batch and ignores num_items_in_batch, so Trainer must divide it by
+    # the gradient accumulation steps. Trainer infers "already normalised over the accumulated batch" from a
+    # forward(**kwargs) signature, which WSDModernBertForMaskedLM has; without these two settings, loss and gradients
+    # are gradient_accumulation_steps times too large. The trainer's num_items_in_batch would also be wrong here: it
+    # counts labels != -100, every one of the 128 slots of the multi-hot labels. loss_is_scaled_for_ga is read by
+    # transformers 5.19 and later; model_accepts_loss_kwargs = False gives the same scaling from 5.0.
+    loss_is_scaled_for_ga = False
+
     def __init__(self, *args, alpha=0, temperature=2, smoothing=0, **kwargs):
         super().__init__(*args, **kwargs)
+        self.model_accepts_loss_kwargs = False
         self.alpha, self.temperature, self.smoothing = alpha, temperature, smoothing
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
