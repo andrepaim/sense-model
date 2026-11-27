@@ -151,6 +151,13 @@ def test_round_options_train_and_log(tmp_path):
     )
     manifest = json.loads((final / "data_manifest.json").read_text())
     assert [f["count"] for f in manifest["splits"]["train"]["files"]] == [6, 1, 3]
+    # Paths under --data-dir are recorded relative to it, so the manifest names the dataset's own files.
+    assert [f["path"] for f in manifest["splits"]["train"]["files"]] == [
+        "labelled.jsonl",
+        "notoffered.jsonl",
+        "unlabelled.jsonl",
+    ]
+    assert manifest["teacher_scores"]["path"] == "teacher.jsonl"
     assert manifest["splits"]["dev"]["count"] == 8
     config = json.loads((final / "training_config.json").read_text())
     assert config["candidate_order"] == "given" and config["group_by_length"] is True
