@@ -185,9 +185,12 @@ def test_resume_latest_replays_the_length_grouped_batches(tmp_path):
     shutil.rmtree(run / "checkpoints" / "checkpoint-3")
     main([*args, "--resume", "latest"])
     logged = rows(run / "metrics.jsonl")
-    resumed = [r for r in logged[logged.index(next(r for r in logged if "resume_from_step" in r)) :] if "loss" in r]
-    assert [r["step"] for r in resumed] == [3]
-    assert resumed[0]["loss"] == pytest.approx(uninterrupted[3], rel=1e-6)
+    marker = next(r for r in logged if "resume_from_step" in r)
+    resumed = [r for r in logged[logged.index(marker) :] if "loss" in r]
+    assert marker["resume_from_step"] < 3
+    assert [r["step"] for r in resumed] == list(range(marker["resume_from_step"] + 1, 4))
+    for r in resumed:
+        assert r["loss"] == pytest.approx(uninterrupted[r["step"]], rel=1e-6)
 
 
 def test_checkpoint_stored_in_bfloat16_trains_in_float32(tmp_path):

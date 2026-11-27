@@ -71,22 +71,42 @@ def _group_keys(example):
     return keys
 
 
-def validate_splits(paths):
+def _split_report(path, examples):
+    return {
+        "path": str(path),
+        "sha256": file_sha256(path),
+        "count": len(examples),
+        "languages": dict(Counter(ex.language for ex in examples)),
+        "annotations": dict(Counter(str(ex.provenance.get("annotation", "unspecified")) for ex in examples)),
+    }
+
+
+def validate_splits(paths, strict=True):
     """Reject cross-split document, identity, normalized-context and family leakage.
 
-    A five-token shingle audit also flags highly overlapping long contexts. Short
-    contexts use exact normalized matching to avoid common-word false positives.
+    A split is one file or a list of files read as one split (overlap between
+    files of the same split is allowed). A five-token shingle audit also flags
+    highly overlapping long contexts. Short contexts use exact normalized
+    matching to avoid common-word false positives. With ``strict=False`` the
+    findings are counted in the report (``leakage: failed``) instead of raised.
     """
     owners, shingles, errors, report = {}, [], [], {}
     for name, path in paths.items():
-        examples = read_jsonl(path)
-        report[name] = {
-            "path": str(path),
-            "sha256": file_sha256(path),
-            "count": len(examples),
-            "languages": dict(Counter(ex.language for ex in examples)),
-            "annotations": dict(Counter(str(ex.provenance.get("annotation", "unspecified")) for ex in examples)),
-        }
+        if isinstance(path, (list, tuple)):
+            files = [(p, read_jsonl(p)) for p in path]
+            examples = [ex for _, rows in files for ex in rows]
+            parts = [_split_report(p, rows) for p, rows in files]
+            report[name] = {
+                "files": parts,
+                # One digest for the whole split: the files' digests in order.
+                "sha256": hashlib.sha256("\n".join(part["sha256"] for part in parts).encode()).hexdigest(),
+                "count": len(examples),
+                "languages": dict(Counter(ex.language for ex in examples)),
+                "annotations": dict(Counter(str(ex.provenance.get("annotation", "unspecified")) for ex in examples)),
+            }
+        else:
+            examples = read_jsonl(path)
+            report[name] = _split_report(path, examples)
         for ex in examples:
             for key in _group_keys(ex):
                 if key in owners and owners[key][0] != name:
@@ -107,9 +127,12 @@ def validate_splits(paths):
                 errors.append(f"{split}/{eid} near-duplicates {other_split}/{other_id}")
         for gram in grams:
             inverted[gram].append((split, eid, len(grams)))
-    if errors:
+    if errors and strict:
         raise ValueError("Cross-split leakage:\n" + "\n".join(errors[:50]))
-    return {"format_version": 1, "splits": report, "leakage": "passed"}
+    result = {"format_version": 1, "splits": report, "leakage": "failed" if errors else "passed"}
+    if errors:
+        result.update(leakage_findings=len(errors), leakage_examples=errors[:50])
+    return result
 
 
 def split_examples(examples, seed=42, ratios=(0.8, 0.1, 0.05, 0.05)):
