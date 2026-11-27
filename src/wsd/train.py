@@ -252,7 +252,9 @@ def _metrics(pred):
     chosen = np.argmax(predictions, axis=-1)
     labeled = labels.sum(-1) > 0
     result = {
-        "accuracy": float(labels[np.arange(len(labels))[labeled], chosen[labeled]].mean()) if labeled.any() else 0
+        "accuracy": float(labels[np.arange(len(labels))[labeled], chosen[labeled]].astype(np.float64).mean())
+        if labeled.any()
+        else 0
     }
     nota = labels.shape[-1] - 1
     offered = predictions.copy()
