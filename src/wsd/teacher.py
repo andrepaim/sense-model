@@ -12,7 +12,16 @@ import math
 from pathlib import Path
 
 from wsd.data import read_jsonl
-from wsd.scoring import add_scoring_arguments, load_scorer, prompt_sha256, read_scores, score_examples
+from wsd.scoring import (
+    add_scoring_arguments,
+    load_scorer,
+    prompt_sha256,
+    read_scores,
+    same_path,
+    score_examples,
+    scorer_identity,
+    untagged_identity,
+)
 from wsd.train import example_fingerprint
 
 
@@ -46,14 +55,21 @@ def cache_rows(examples, scores, tokenizer, metadata, temperature, teacher_model
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    add_scoring_arguments(parser)
+    add_scoring_arguments(parser, dtype=None)
     parser.set_defaults(batch_size=8)
     parser.add_argument("--output", required=True, help="Teacher cache (JSONL) that wsd train --teacher-scores reads")
     parser.add_argument("--scores", help="Raw teacher logits by prompt (JSONL): reused, extended and resumable")
     parser.add_argument("--temperature", type=float, default=2.0)
+    parser.add_argument(
+        "--skip-too-long", action="store_true", help="Leave out examples whose prompt exceeds max_length (counted)"
+    )
     a = parser.parse_args(argv)
     if a.temperature <= 0 or a.batch_size < 1 or (a.max_tokens is not None and a.max_tokens < 1):
         parser.error("Temperature, batch size and max tokens must be positive")
+    if any(same_path(path, a.output) for path in a.input) or (a.scores and same_path(a.scores, a.output)):
+        parser.error("--output must differ from --scores and from every --input file")
+    if a.scores and any(same_path(path, a.scores) for path in a.input):
+        parser.error("--scores must not be one of the --input files")
     predictor = load_scorer(
         a.model, revision=a.revision, local_files_only=a.local_files_only, device=a.device, dtype=a.dtype
     )
@@ -64,8 +80,27 @@ def main(argv=None):
                 raise ValueError(f"Duplicate example ID across inputs: {example.id}")
             seen.add(example.id)
             examples.append(example)
-    new = score_examples(predictor, examples, a.scores, max_tokens=a.max_tokens, max_batch=a.batch_size, progress=True)
+    new = score_examples(
+        predictor,
+        examples,
+        a.scores,
+        max_tokens=a.max_tokens,
+        max_batch=a.batch_size,
+        progress=True,
+        identity=scorer_identity(predictor, a.model),
+        untagged=untagged_identity(a.untagged_scores),
+    )
     scores = read_scores(a.scores) if a.scores else {row["hash"]: row for row in new}
+    too_long = [
+        ex.id
+        for ex in examples
+        if scores.get(prompt_sha256(ex, predictor.tokenizer, predictor.metadata), {}).get("code") == "TOO_LONG"
+    ]
+    if too_long and not a.skip_too_long:
+        raise ValueError(
+            f"{len(too_long)} prompts exceed max_length {predictor.metadata['max_length']} (first: {too_long[0]}); "
+            "shorten them or pass --skip-too-long"
+        )
     revision = predictor.metadata.get("model_revision", a.revision)
     rows, skipped = cache_rows(
         examples, scores, predictor.tokenizer, predictor.metadata, a.temperature, a.model, revision
@@ -74,7 +109,14 @@ def main(argv=None):
     with Path(a.output).open("w", encoding="utf-8") as stream:
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
-    report = {"rows": len(rows), "skipped": len(skipped), "scored": sum(r["type"] == "scored" for r in new)}
+    report = {
+        "rows": len(rows),
+        "skipped": len(skipped),
+        "too_long": len(too_long),
+        "scored": sum(r["type"] == "scored" for r in new),
+    }
+    if too_long:
+        print(f"left out {len(too_long)} examples whose prompt exceeds max_length", flush=True)
     print(json.dumps(report))
     return report
 

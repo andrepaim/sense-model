@@ -112,6 +112,7 @@ def score_cli(*args):
 
 def saved(tmp_path, name, dtype=None, max_length=None):
     p = tiny_predictor()
+    p.metadata["model_revision"] = f"rev-{name}"
     if dtype is not None:
         p.model.to(dtype)
     if max_length is not None:
