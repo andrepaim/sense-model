@@ -102,7 +102,8 @@ batch order (the length-grouped sampler; `--group-by-length` now seeds it by epo
 
 The configurations are `configs/wiktionary_round1_labels_only.json`, `configs/wiktionary_round1_teacher_only.json` and
 `configs/wiktionary_round1_labels_teacher.json`. They hold every setting above and the ones that only shape the logs
-(evaluation batch 16, a log every 10 steps, a baseline evaluation before training).
+(evaluation batch 16, a log every 10 steps, a baseline evaluation before training). They set `shuffle_examples`: the
+round's trainer shuffled the examples once with the seed in every run, the single-file labels-only run included.
 
 ## Pilot
 
@@ -213,9 +214,11 @@ R=runs/wiktionary-round1; mkdir -p $R
 
 # 1. Teacher soft labels (58 minutes on the RTX 3060 for 145,729 prompts). The dataset already holds them:
 #    with a copy of its raw logits as --scores nothing is scored and the cache comes out byte for byte the same.
+#    Its rows predate the recorded scorer identity, so --untagged-scores states what they are.
 cp $DATA/teacher/teacher-bf16.jsonl $R-teacher-bf16.jsonl
 wsd teacher --model sign/Ettin-1B-WSD --revision e6fc37a7e11fee91a600a0cd8e7423bcc639a1cc --device cuda \
   --dtype bfloat16 --max-tokens 8192 --batch-size 64 --temperature 2 --scores $R-teacher-bf16.jsonl \
+  --untagged-scores sign/Ettin-1B-WSD e6fc37a7e11fee91a600a0cd8e7423bcc639a1cc bfloat16 2048 \
   --input $DATA/data/train-labelled.clean.jsonl $DATA/data/train-notoffered.clean.jsonl $DATA/data/unlabelled.clean.jsonl \
   --output $R-cache-T2.jsonl
 
