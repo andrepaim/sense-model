@@ -243,3 +243,132 @@ def test_saved_tokenizer_carries_no_batch_padding(tmp_path):
     p.save_pretrained(tmp_path)
     assert json.loads((tmp_path / "tokenizer.json").read_text())["padding"] is None
     assert p.logits([a, b]).shape == (2, 128)
+
+
+def small_run(tmp_path):
+    data = tmp_path / "data"
+    write_jsonl(data / "train.jsonl", [make(f"t{i}", 2 + i) for i in range(4)])
+    write_jsonl(data / "dev.jsonl", [make("dev", 3, document="dev", tail=" dev")])
+    model = tmp_path / "model"
+    tiny_predictor().save_pretrained(model)
+    return [
+        "--model", str(model), "--local-files-only", "--max-length", "256", "--data-dir", str(data),
+        "--train", "train.jsonl", "--dev", "dev.jsonl", "--batch-size", "1", "--save-steps", "1",
+        "--max-steps", "3", "--output", str(tmp_path / "run"),
+    ]  # fmt: skip
+
+
+# resolved_config.json as wsd train wrote it before the round's options (origin/main 5a91847).
+OLD_RESOLVED = {
+    "config": None, "model": None, "revision": None, "train": None, "dev": None, "calibration": None,
+    "output": None, "device": "cpu", "local_files_only": True, "seed": 42, "epochs": 3, "max_steps": 3,
+    "batch_size": 1, "grad_accum": 1, "learning_rate": 5e-05, "weight_decay": 0.01, "label_smoothing": 0.1,
+    "teacher_scores": None, "distill_alpha": 0.7, "distill_temperature": 2.0, "resume": None, "patience": 2,
+    "save_steps": 1, "max_length": 256, "none_text": None, "separator": None, "report_to": "none",
+    "bf16": False, "allow_silver": False,
+}  # fmt: skip
+
+
+def test_run_recorded_before_the_round_options_resumes(tmp_path):
+    import shutil
+
+    args = small_run(tmp_path)
+    main(args)
+    run = tmp_path / "run"
+    old = dict(OLD_RESOLVED, model=args[1], train="train.jsonl", dev="dev.jsonl", output=str(run))
+    (run / "resolved_config.json").write_text(json.dumps(old))
+    shutil.rmtree(run / "final")
+    shutil.rmtree(run / "checkpoints" / "checkpoint-3")
+    main([*args, "--resume", str(run / "checkpoints" / "checkpoint-1")])
+    assert (run / "final").is_dir()
+    # A setting that changes the run is still refused.
+    old["learning_rate"] = 1e-3
+    (run / "resolved_config.json").write_text(json.dumps(old))
+    shutil.rmtree(run / "final")
+    with pytest.raises(ValueError, match="learning_rate"):
+        main([*args, "--resume", str(run / "checkpoints" / "checkpoint-1")])
+
+
+def test_single_training_file_keeps_file_order_unless_asked(tmp_path, monkeypatch):
+    import wsd.train as train
+
+    built = {}
+    real = train.PreparedDataset
+
+    def capture(examples, predictor, seed=42, shuffle=False, teacher=None):
+        dataset = real(examples, predictor, seed, shuffle, teacher)
+        built.setdefault("train", (list(examples), seed, shuffle, dataset))
+        return dataset
+
+    monkeypatch.setattr(train, "PreparedDataset", capture)
+    args = small_run(tmp_path)
+    main(args)
+    examples, seed, shuffle, dataset = built.pop("train")
+    from wsd.data import read_jsonl
+
+    # As before the round's options: file order, candidates shuffled by PreparedDataset with the seed.
+    in_file = read_jsonl(tmp_path / "data" / "train.jsonl")
+    assert [ex.id for ex in examples] == [ex.id for ex in in_file] and shuffle is True and seed == 42
+    expected = real(in_file, tiny_predictor(), 42, shuffle=True)
+    assert all(torch.equal(a["labels"], b["labels"]) for a, b in zip(dataset.rows, expected.rows))
+    main([*args[:-1], str(tmp_path / "shuffled"), "--shuffle-examples"])
+    examples = built.pop("train")[0]
+    order = [ex.id for ex in in_file]
+    random.Random(42).shuffle(order)
+    assert [ex.id for ex in examples] == order
+
+
+def test_resume_latest_without_a_checkpoint_says_so_and_marks_the_restart(tmp_path, capsys):
+    args = small_run(tmp_path)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "metrics.jsonl").write_text('{"step": 1, "loss": 1.0}\n')
+    (run / "data_manifest.json").write_text(json.dumps({"splits": {"train": {"sha256": "other"}}}))
+    with pytest.raises(ValueError, match="Resume dataset changed"):
+        main([*args, "--resume", "latest"])
+    (run / "data_manifest.json").unlink()
+    main([*args, "--resume", "latest"])
+    assert "no complete checkpoint" in capsys.readouterr().out
+    logged = rows(run / "metrics.jsonl")
+    assert logged[1].get("restart") == "no complete checkpoint"
+
+
+def test_length_grouping_arguments_follow_the_transformers_version():
+    from wsd.train import length_grouping_arguments
+
+    class New:
+        __dataclass_fields__ = {"train_sampling_strategy": None}
+
+    class Old:
+        __dataclass_fields__ = {"group_by_length": None}
+
+    assert length_grouping_arguments(New) == {"train_sampling_strategy": "group_by_length"}
+    assert length_grouping_arguments(Old) == {"group_by_length": True}
+    from transformers import TrainingArguments
+
+    assert length_grouping_arguments(TrainingArguments) == {"train_sampling_strategy": "group_by_length"}
+
+
+def test_early_stopping_counts_only_the_primary_development_form(tmp_path):
+    from transformers import TrainerControl, TrainerState, TrainingArguments
+
+    from wsd.train import PrimaryEarlyStopping
+
+    args = TrainingArguments(
+        output_dir=str(tmp_path),
+        metric_for_best_model="c1600_accuracy",
+        load_best_model_at_end=True,
+        eval_strategy="steps",
+        save_strategy="steps",
+        use_cpu=True,
+        report_to="none",
+    )
+    state, control = TrainerState(), TrainerControl()
+    state.best_metric = 0.9
+    stop = PrimaryEarlyStopping(early_stopping_patience=2)
+    for _ in range(3):
+        stop.on_evaluate(args, state, control, metrics={"eval_uncapped_accuracy": 0.1})
+    assert stop.early_stopping_patience_counter == 0 and not control.should_training_stop
+    stop.on_evaluate(args, state, control, metrics={"eval_c1600_accuracy": 0.5})
+    stop.on_evaluate(args, state, control, metrics={"eval_c1600_accuracy": 0.5})
+    assert control.should_training_stop
