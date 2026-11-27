@@ -297,8 +297,9 @@ def latest_checkpoint(folder):
     return max(found)[1] if found else None
 
 
-def read_training_examples(paths, seed):
-    """The examples of every file, in the order given, shuffled once with the run's seed."""
+def read_training_examples(paths, seed, shuffle=None):
+    """The examples of every file, in the order given; shuffled once with the run's seed when ``shuffle`` is true,
+    which is the default for several files. One file keeps its order, as before several files were supported."""
     examples, seen = [], set()
     for path in paths:
         for example in read_jsonl(path):
@@ -306,7 +307,8 @@ def read_training_examples(paths, seed):
                 raise ValueError(f"Duplicate training example ID across files: {example.id}")
             seen.add(example.id)
             examples.append(example)
-    random.Random(seed).shuffle(examples)
+    if len(paths) > 1 if shuffle is None else shuffle:
+        random.Random(seed).shuffle(examples)
     return examples
 
 
@@ -319,11 +321,17 @@ def limit_examples(examples, limit, seed):
     return rows[:limit]
 
 
-def parse_args(argv=None):
+def length_grouping_arguments(arguments=TrainingArguments):
+    """TrainingArguments for length-grouped batches: train_sampling_strategy from transformers 5.2, the
+    group_by_length flag before it."""
+    if "train_sampling_strategy" in arguments.__dataclass_fields__:
+        return {"train_sampling_strategy": "group_by_length"}
+    return {"group_by_length": True}
+
+
+def build_parser():
     bootstrap = argparse.ArgumentParser(add_help=False)
     bootstrap.add_argument("--config")
-    known, _ = bootstrap.parse_known_args(argv)
-    config = json.loads(Path(known.config).read_text(encoding="utf-8")) if known.config else {}
     parser = argparse.ArgumentParser(description=__doc__, parents=[bootstrap])
     parser.add_argument("--model")
     parser.add_argument("--revision")
@@ -353,6 +361,11 @@ def parse_args(argv=None):
     parser.add_argument("--distill-temperature", type=float, default=2.0)
     parser.add_argument(
         "--drop-labels", action="store_true", help="Teacher only: train on labelled examples without their gold_ids"
+    )
+    parser.add_argument(
+        "--shuffle-examples",
+        action="store_true",
+        help="Shuffle the training examples once with the seed before training (always done for several files)",
     )
     parser.add_argument(
         "--candidate-order",
@@ -385,6 +398,59 @@ def parse_args(argv=None):
         action="store_true",
         help="Record cross-split overlap in data_manifest.json instead of failing (leak checks made elsewhere)",
     )
+    return parser
+
+
+# Settings a resumed run must share with the run it resumes. A resolved_config.json written before a key existed
+# records nothing for it; the key's default stands in.
+RESUME_KEYS = (
+    "model",
+    "revision",
+    "train",
+    "dev",
+    "extra_dev",
+    "dev_limit",
+    "seed",
+    "learning_rate",
+    "teacher_scores",
+    "distill_alpha",
+    "distill_temperature",
+    "label_smoothing",
+    "drop_labels",
+    "shuffle_examples",
+    "candidate_order",
+    "group_by_length",
+    "max_length",
+    "none_text",
+    "separator",
+)
+
+
+def _resume_value(key, value):
+    if key == "train" and isinstance(value, str):
+        return [value]
+    if key == "extra_dev" and isinstance(value, list):
+        return dict(item.split("=", 1) for item in value)
+    return value
+
+
+def resume_mismatch(old, new):
+    """The first setting in RESUME_KEYS that differs between a recorded and a new resolved configuration, or None."""
+    defaults = {action.dest: action.default for action in build_parser()._actions}
+    defaults["extra_dev"] = {}
+    for key in RESUME_KEYS:
+        before = _resume_value(key, old.get(key, defaults.get(key)))
+        if before != _resume_value(key, new.get(key)):
+            return key
+    return None
+
+
+def parse_args(argv=None):
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument("--config")
+    known, _ = bootstrap.parse_known_args(argv)
+    config = json.loads(Path(known.config).read_text(encoding="utf-8")) if known.config else {}
+    parser = build_parser()
     allowed = {a.dest for a in parser._actions}
     unknown = set(config) - allowed
     if unknown:
@@ -446,6 +512,8 @@ def main(argv=None):
     if resume == "latest":
         resume = latest_checkpoint(output / "checkpoints")
         resume = str(resume) if resume else None
+        if resume is None:
+            print(f"--resume latest: no complete checkpoint in {output / 'checkpoints'}; starting from the beginning")
     train_paths = [_data_path(args, path) for path in args.train]
     dev_paths = {args.dev_name: _data_path(args, args.dev)}
     dev_paths.update({name: _data_path(args, path) for name, path in args.extra_dev.items()})
@@ -458,12 +526,12 @@ def main(argv=None):
     if calibration_path:
         splits["calibration"] = calibration_path
     manifest = validate_splits(splits, strict=not args.allow_split_overlap)
-    if resume and (output / "data_manifest.json").exists():
+    if args.resume and (output / "data_manifest.json").exists():
         previous_manifest = json.loads((output / "data_manifest.json").read_text(encoding="utf-8"))
         for name, info in manifest["splits"].items():
             if previous_manifest["splits"].get(name, {}).get("sha256") != info["sha256"]:
                 raise ValueError(f"Resume dataset changed: {name}")
-    train = read_training_examples(train_paths, args.seed)
+    train = read_training_examples(train_paths, args.seed, True if args.shuffle_examples else None)
     devs = {name: limit_examples(read_jsonl(path), args.dev_limit, args.seed) for name, path in dev_paths.items()}
     from wsd.pipeline import require_reviewed
 
@@ -511,29 +579,9 @@ def main(argv=None):
     if args.resume:
         previous = output / "resolved_config.json"
         if previous.exists():
-            old = json.loads(previous.read_text(encoding="utf-8"))
-            for key in (
-                "model",
-                "revision",
-                "train",
-                "dev",
-                "extra_dev",
-                "dev_limit",
-                "seed",
-                "learning_rate",
-                "teacher_scores",
-                "distill_alpha",
-                "distill_temperature",
-                "label_smoothing",
-                "drop_labels",
-                "candidate_order",
-                "group_by_length",
-                "max_length",
-                "none_text",
-                "separator",
-            ):
-                if old.get(key) != resolved.get(key):
-                    raise ValueError(f"Resume configuration changed {key}; start a new run")
+            changed = resume_mismatch(json.loads(previous.read_text(encoding="utf-8")), resolved)
+            if changed:
+                raise ValueError(f"Resume configuration changed {changed}; start a new run")
     (output / "resolved_config.json").write_text(json.dumps(resolved, indent=2) + "\n", encoding="utf-8")
     if teacher_scores:
         manifest["teacher_scores"] = {"sha256": file_sha256(teacher_scores), "path": teacher_scores}
@@ -561,7 +609,7 @@ def main(argv=None):
     if args.bf16 and (not torch.cuda.is_available() or not torch.cuda.is_bf16_supported()):
         raise ValueError("--bf16 requires a CUDA device with bf16 support")
     named = len(dev_datasets) > 1
-    extra = {"train_sampling_strategy": "group_by_length"} if args.group_by_length else {}
+    extra = length_grouping_arguments() if args.group_by_length else {}
     training_args = TrainingArguments(
         output_dir=str(output / "checkpoints"),
         per_device_train_batch_size=args.batch_size,
@@ -622,6 +670,9 @@ def main(argv=None):
         smoothing=args.label_smoothing,
         length_grouped=args.group_by_length,
     )
+    if args.resume == "latest" and resume is None and (output / "metrics.jsonl").exists():
+        with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"restart": "no complete checkpoint", "time": time.time()}) + "\n")
     if resume:
         step = json.loads((Path(resume) / "trainer_state.json").read_text(encoding="utf-8"))["global_step"]
         with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
