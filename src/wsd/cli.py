@@ -19,6 +19,8 @@ def main(argv=None):
             "export",
             "publish",
             "teacher",
+            "score",
+            "rank",
             "annotate",
             "pilot",
             "generate",
@@ -66,6 +68,8 @@ def main(argv=None):
     module = {
         "prepare": "data",
         "teacher": "teacher",
+        "score": "scoring",
+        "rank": "ranking",
         "annotate": "annotation_server",
         "generate": "generation",
         "label": "labeling",
