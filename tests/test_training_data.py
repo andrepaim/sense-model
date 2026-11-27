@@ -6,6 +6,7 @@ import torch
 from test_core import example, tiny_predictor
 
 from wsd.data import prepare_raganato, read_lexicon, split_examples, validate_splits, write_jsonl
+from wsd.schema import Target
 from wsd.train import PreparedDataset, choice_loss, example_fingerprint, main, read_teacher
 
 
@@ -122,6 +123,56 @@ def test_tiny_training_and_resume(tmp_path):
     main([*args, "--max-steps", "2", "--resume", str(tmp_path / "run/checkpoints/checkpoint-1")])
     state = json.loads((tmp_path / "run/checkpoints/checkpoint-2/trainer_state.json").read_text())
     assert state["global_step"] == 2
+
+
+def test_gradient_accumulation_matches_full_batch(tmp_path):
+    # One optimizer step over the same four examples, as one batch of four or as four accumulated batches of one,
+    # must log the same mean loss and the same pre-clipping gradient norm. A trainer that leaves out the division by
+    # the accumulation steps logs both four times too large.
+    p = tiny_predictor()
+    model = tmp_path / "model"
+    p.save_pretrained(model)
+    train = []
+    for i, (word, gold) in enumerate([("river", "a"), ("money", "b"), ("seat", "a"), ("loan", "b")]):
+        x = example()
+        x.id, x.text, x.target, x.gold_ids = f"train-{i}", f"bank {word}", Target(0, 4, "bank"), [gold]
+        train.append(x)
+    dev = example()
+    dev.id, dev.text = "dev", "bank bank independently"
+    write_jsonl(tmp_path / "train.jsonl", train)
+    write_jsonl(tmp_path / "dev.jsonl", [dev])
+
+    def first_step(name, batch_size, grad_accum):
+        main(
+            [
+                "--model",
+                str(model),
+                "--train",
+                str(tmp_path / "train.jsonl"),
+                "--dev",
+                str(tmp_path / "dev.jsonl"),
+                "--output",
+                str(tmp_path / name),
+                "--max-steps",
+                "1",
+                "--save-steps",
+                "1",
+                "--batch-size",
+                str(batch_size),
+                "--grad-accum",
+                str(grad_accum),
+                "--max-length",
+                "256",
+                "--local-files-only",
+            ]
+        )
+        rows = [json.loads(line) for line in (tmp_path / name / "metrics.jsonl").read_text().splitlines()]
+        return next(row for row in rows if "loss" in row and "grad_norm" in row)
+
+    full = first_step("full", batch_size=4, grad_accum=1)
+    accumulated = first_step("accumulated", batch_size=1, grad_accum=4)
+    assert accumulated["loss"] == pytest.approx(full["loss"], rel=1e-3)
+    assert accumulated["grad_norm"] == pytest.approx(full["grad_norm"], rel=1e-3)
 
 
 def test_portuguese_context_join_and_generation(tmp_path, monkeypatch):
