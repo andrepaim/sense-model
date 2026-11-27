@@ -31,6 +31,7 @@
   "patience": 4,
   "max_length": 2048,
   "candidate_order": "given",
+  "shuffle_examples": true,
   "group_by_length": true,
   "evaluate_before_training": true,
   "allow_split_overlap": true
