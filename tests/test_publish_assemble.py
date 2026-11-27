@@ -130,3 +130,37 @@ def test_publish_assembles_then_validates_without_uploading(tmp_path, capsys):
     assert (tmp_path / "artifact" / "checksums.json").is_file()
     with pytest.raises(ValueError, match="empty"):
         main(args)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda r: r["files"].append("../outside.json"),
+        lambda r: r.update(release_files={"/tmp/abs.json": "README.md"}),
+        lambda r: r["recipe"].update(to="../../recipe.json"),
+    ],
+)
+def test_names_that_leave_the_artifact_are_refused(tmp_path, change):
+    export = export_folder(tmp_path)
+    release = release_file(tmp_path)
+    config = json.loads(release.read_text())
+    change(config)
+    release.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="outside the artifact"):
+        assemble_release(release, tmp_path / "artifact", export=export)
+    assert not (tmp_path / "artifact").exists() and not (tmp_path / "outside.json").exists()
+
+
+def test_a_failed_assembly_leaves_nothing_behind(tmp_path):
+    export = export_folder(tmp_path)
+    release = release_file(tmp_path)
+    config = json.loads(release.read_text())
+    config["files"].append("missing.json")
+    release.write_text(json.dumps(config))
+    with pytest.raises(FileNotFoundError):
+        assemble_release(release, tmp_path / "artifact", export=export)
+    assert not (tmp_path / "artifact").exists()
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".artifact")] == []
+    config["files"].remove("missing.json")
+    release.write_text(json.dumps(config))
+    assert (assemble_release(release, tmp_path / "artifact", export=export) / "model_metadata.json").is_file()
