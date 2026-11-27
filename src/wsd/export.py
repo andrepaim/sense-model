@@ -212,7 +212,7 @@ def first_prompts(examples, tokenizer, metadata, count):
 def activation_outliers(predictor, examples, count=200, device="cpu"):
     """Input statistics of every nn.Linear over the first ``count`` prompts (one at a time, float32): the mean and
     maximum over prompts of max |x|, and the mean over prompts of max |x| divided by its 99.9th percentile (taken
-    over the first 2,000,000 values of |x|), as training round 1 measured them (act_stats_model.py)."""
+    over the first 2,000,000 values of |x|), as training round 1 measured them (act_stats_model.py in contextual-dictionary's validation/training/ at 6cdc449)."""
     from collections import defaultdict
 
     from wsd.tokenizer import encode_examples
@@ -264,7 +264,7 @@ def outlier_nodes(layers):
 def compare_graphs(reference, candidate, examples, tokenizer, metadata, threads=16):
     """Score each prompt alone with two ONNX graphs on the CPU and compare: the same top choice (offered candidates
     and none-fits), the same set of the three best offered candidates, and the logit error after removing each
-    prompt's mean (order depends only on differences). The measures of screen.py in training round 1."""
+    prompt's mean (order depends only on differences). The measures of screen.py in training round 1 (contextual-dictionary's validation/training/ at 6cdc449)."""
     import onnxruntime as ort
 
     from wsd.tokenizer import encode_examples

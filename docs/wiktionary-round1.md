@@ -3,23 +3,31 @@
 On 2026-11-25 and 26, `sign/Ettin-150m-WSD` was fine-tuned on English Wiktionary's own usage examples and quotations,
 with `sign/Ettin-1B-WSD` as a teacher, for the Chrome extension
 [Contextual Dictionary](https://github.com/andrepaim/contextual-dictionary). The run that ships is published as
-[`andrepaim/Ettin-150m-WSD-wiktionary`](https://huggingface.co/andrepaim/Ettin-150m-WSD-wiktionary/tree/affc67b9a87c51a07ce642726cee993c593ad744)
-(revision `affc67b9a87c51a07ce642726cee993c593ad744`), and its INT8 graph is the extension's release `assets-v2`. The
+[`andrepaim/Ettin-150m-WSD-wiktionary`](https://huggingface.co/andrepaim/Ettin-150m-WSD-wiktionary/tree/0edcbab04bb30eadeeef6babb26e8055b173b8d7)
+(revision `0edcbab04bb30eadeeef6babb26e8055b173b8d7`), and its INT8 graph is the extension's release `assets-v2`. It was first published at revision
+`affc67b9a87c51a07ce642726cee993c593ad744` (2026-11-26); `0edcbab0` (2026-11-27, `wsd publish` from this repository) has the same weights and ONNX
+graphs and adds the extension's `tokenizer.json`, the card of `releases/Ettin-150m-WSD-wiktionary/` and the run's
+records (`training_config.json`, `data_manifest.json`, `evaluation.json`). The
 training and evaluation data are the dataset
 [`andrepaim/wiktionary-wsd`](https://huggingface.co/datasets/andrepaim/wiktionary-wsd/tree/84b6444e83219aaa76c29a517a64a640c1df9a46)
 (revision `84b6444e83219aaa76c29a517a64a640c1df9a46`).
 
 This page holds the model-level method and numbers and the rerun with `wsd` commands. The round ran with scripts of the
-extension's repository over this package; their options are now part of `wsd train`, `wsd teacher`, `wsd score`,
+extension's repository over this package (`validation/training/` as it was at
+[`6cdc449`](https://github.com/andrepaim/contextual-dictionary/tree/6cdc449/validation/training), removed in `7947129`); their options are now part of `wsd train`, `wsd teacher`, `wsd score`,
 `wsd rank`, `wsd export` and `wsd publish`, and "Checked after the move" below shows that these commands give the
 round's results again. What the extension's reader gets (accuracy in the browser at its time budget, latency, threads,
 memory, the cards) is measured in the extension's
-[`docs/validation.md`](https://github.com/andrepaim/contextual-dictionary/blob/main/docs/validation.md), "Training round
-1 (assets-v2)", and is not repeated here.
+[`docs/validation.md`](https://github.com/andrepaim/contextual-dictionary/blob/7947129/docs/validation.md), "Training round
+1 (assets-v2)", with the scripts of [`validation/candidate-model/`](https://github.com/andrepaim/contextual-dictionary/tree/7947129/validation/candidate-model), and
+is not repeated here. The data were built by the extension's builders (`validation/build-train-set.ts`,
+`validation/build-unlabelled-set.ts`) and exported to the dataset by
+[`validation/dataset/`](https://github.com/andrepaim/contextual-dictionary/tree/7947129/validation/dataset) (all at commit `7947129`).
 
 **Where the numbers come from.** Every number under "Data", "Recipe", "Pilot", "Runs", "Development", "Test", "Which run
-ships" and "Export" is copied from that section of the extension's `docs/validation.md` (as of its commit `6cdc449`),
-which counts the round's files. The development and test tables, the export's outlier ratios, sizes and INT8 check, and
+ships" and "Export" is copied from that section of the extension's `docs/validation.md` as it was at commit
+[`6cdc449`](https://github.com/andrepaim/contextual-dictionary/blob/6cdc449/docs/validation.md), which counts the round's files (at `7947129` the section keeps a
+summary and points here). The development and test tables, the export's outlier ratios, sizes and INT8 check, and
 the teacher cache were also recomputed from the round's kept files on 2026-11-27 with the commands of this package and
 came out the same ("Checked after the move"). The split-check counts under "Limits" are new, computed on 2026-11-27.
 
@@ -191,9 +199,9 @@ curves stay on the maintainer's machine.
 - **Development passages overlap training passages** (found on 2026-11-27). Training and development headwords are
   disjoint, and the build checked training passages only against the test sets. This package's split check
   (`validate_splits`, normalized passage equality and a five-word-shingle Jaccard of at least 0.8 for passages of 15
-  words or more) finds, between the training files and the two development forms, 90 equal passages and 668 near
-  duplicates, involving 438 of the 4,931 development items and 341 training items: the same quotation filed under
-  another headword. The development numbers may be somewhat optimistic; the choice between runs was made on them. The
+  words or more) finds 758 findings between the training files and the two development forms, 90 equal passages and
+  668 near duplicates. They involve 232 of the 4,931 development items (451 development examples across the two forms)
+  and 317 training items (341 training examples): the same quotation filed under another headword. The development numbers may be somewhat optimistic; the choice between runs was made on them. The
   configurations set `allow_split_overlap`, so a run records these findings in its `data_manifest.json` instead of
   stopping.
 - One seed per run, one machine.
@@ -268,8 +276,8 @@ wsd publish --assemble releases/Ettin-150m-WSD-wiktionary/release.json --export 
 
 A rerun of step 2 gives its own checkpoints: the round's first logged steps come out again to within bf16 noise (below),
 but not bit for bit, so a full rerun's accuracies and its chosen checkpoint can differ slightly. To export and publish
-the round's own model, give step 5 `--model` a download of `andrepaim/Ettin-150m-WSD-wiktionary` at revision `affc67b9`
-(its `model.safetensors` is the checkpoint). The round measured outliers and the INT8 check on all 5,221 development
+the round's own model, give step 5 `--model` a download of `andrepaim/Ettin-150m-WSD-wiktionary` at revision `0edcbab0`
+(its `model.safetensors` is the checkpoint, the same file as at `affc67b9`). The round measured outliers and the INT8 check on all 5,221 development
 prompts, before the leak check dropped 20 development items; the cleaned files of the dataset hold 5,200, so their first
 200 prompts differ from the round's by one and their first 1,000 by three. With them the same five layers are chosen
 (ratios within 0.3 of the round's), and the graph is the same.

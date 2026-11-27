@@ -33,8 +33,9 @@ How it was made and measured at model level is written up in sense-model's
 [`docs/wiktionary-round1.md`](https://github.com/andrepaim/sense-model/blob/main/docs/wiktionary-round1.md), with the `wsd` commands that rerun it, and the
 training and evaluation data are the dataset [`andrepaim/wiktionary-wsd`](https://huggingface.co/datasets/andrepaim/wiktionary-wsd/tree/84b6444e83219aaa76c29a517a64a640c1df9a46) (revision
 `84b6444e83219aaa76c29a517a64a640c1df9a46`). The measurements in the browser are in the extension's
-[`docs/validation.md`](https://github.com/andrepaim/contextual-dictionary/blob/main/docs/validation.md), section "Training
-round 1 (assets-v2)". The numbers on this card come from those two documents; the example's output, the file sizes and
+[`docs/validation.md`](https://github.com/andrepaim/contextual-dictionary/blob/7947129/docs/validation.md), section "Training
+round 1 (assets-v2)", measured with the scripts of its
+[`validation/candidate-model/`](https://github.com/andrepaim/contextual-dictionary/tree/7947129/validation/candidate-model). The numbers on this card come from those two documents; the example's output, the file sizes and
 digests, and the warm-up, weight decay and mixed precision (from the trainer's arguments) were checked for this card.
 
 ## What it does
@@ -215,7 +216,8 @@ agreement with fp32 on the top choice).
 - This run (training round 1, "labels and teacher": 185,889 examples, labels where there are) stopped at step 4,200 of 8,715
   planned. **The weights here are the step-3,000 checkpoint (1.03 epochs).**
 - One NVIDIA GeForce RTX 3060 (12 GB); Python 3.12, PyTorch 2.14.1, transformers 5.23.0. The run used a trainer script
-  of the extension's repository over sense-model's dataset, loss and trainer class; its options are now part of
+  of the extension's repository (`validation/training/train_thin.py` at
+  [`6cdc449`](https://github.com/andrepaim/contextual-dictionary/tree/6cdc449/validation/training)) over sense-model's dataset, loss and trainer class; its options are now part of
   [sense-model](https://github.com/andrepaim/sense-model)'s `wsd train`, and `configs/wiktionary_round1_labels_teacher.json` there reproduces the run's first
   logged steps (`training_config.json` here).
 
@@ -321,8 +323,9 @@ Item by item, this model does not only add correct answers; it also loses some t
 - **It loses some answers the base got right**: 7.8% of the base's correct Wiktionary items, 3.6% of Simple English and 1 of
   67 hand-written, while gaining more. Among about twelve demonstration lookups the base got right, two became wrong.
 - **Development passages overlap training passages.** Training and development headwords are disjoint, but the same
-  quotation is often filed under several headwords: sense-model's split check finds 438 of the 4,931 development items
-  with a passage equal to (90 findings) or nearly the same as (668) that of a training item, under another headword. The
+  quotation is often filed under several headwords: sense-model's split check finds 90 equal passages and 668 near
+  duplicates between training and development data, involving 232 of the 4,931 development items (451 development
+  examples across the two prompt forms) and 317 training items (341 examples), under other headwords. The
   development numbers may be somewhat optimistic for that reason; the test sets were checked against training passages
   when the data was built (no equal passage and no shared run of ten words).
 - All measurements were taken on one machine.
@@ -374,6 +377,6 @@ whether the terms of the training data's licences extend to the weights.
 ## More
 
 - The extension: <https://github.com/andrepaim/contextual-dictionary>
-- Full measurements, methods and caveats: [`docs/validation.md`](https://github.com/andrepaim/contextual-dictionary/blob/main/docs/validation.md), "Training round 1 (assets-v2)"
+- Measurements in the extension: [`docs/validation.md`](https://github.com/andrepaim/contextual-dictionary/blob/7947129/docs/validation.md), "Training round 1 (assets-v2)", and the scripts in [`validation/candidate-model/`](https://github.com/andrepaim/contextual-dictionary/tree/7947129/validation/candidate-model); the data build in [`validation/dataset/`](https://github.com/andrepaim/contextual-dictionary/tree/7947129/validation/dataset)
 - Model-level method, numbers and the rerun with `wsd` commands: [`docs/wiktionary-round1.md`](https://github.com/andrepaim/sense-model/blob/main/docs/wiktionary-round1.md) in sense-model
 - Training and evaluation data: [`andrepaim/wiktionary-wsd`](https://huggingface.co/datasets/andrepaim/wiktionary-wsd/tree/84b6444e83219aaa76c29a517a64a640c1df9a46)
