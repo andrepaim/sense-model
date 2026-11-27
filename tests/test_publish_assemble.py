@@ -101,6 +101,7 @@ def test_assemble_builds_the_repository_layout(tmp_path):
         "float_matmuls": ["/model/model/layers.0/mlp/Wo/MatMul"],
         "token_embedding": "float16, cast to float at session creation",
     }
+    assert (out / "onnx" / "recipe.json").read_text().endswith("}\n")
     recipe = json.loads((out / "onnx" / "recipe.json").read_text())
     assert recipe["model"] == "model.safetensors (this repository)" and recipe["outlier_layers"] == [0]
     assert json.loads((out / "evaluation.json").read_text()) == {"development": {"items": 3}, "test": {"items": 4}}
