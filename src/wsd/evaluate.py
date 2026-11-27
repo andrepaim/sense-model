@@ -50,17 +50,22 @@ def _is_correct(choice, gold):
 
 
 def paired_bootstrap(model_correct, baseline_correct, samples=2000, seed=42):
-    """Paired example bootstrap; samples sharing documents should be interpreted cautiously."""
+    """Paired example bootstrap; samples sharing documents should be interpreted cautiously.
+
+    Each resample draws len(delta) indices with random.Random(seed).randrange; the interval is the 2.5th and 97.5th
+    percentile of the sorted resample means (indices int(0.025 R) and int(0.975 R) - 1), the procedure of training
+    round 1's published intervals."""
     if len(model_correct) != len(baseline_correct):
         raise ValueError("paired results have different lengths")
     if not model_correct:
         return {"difference": None, "ci95": [None, None], "samples": samples}
     rng = random.Random(seed)
     delta = [int(a) - int(b) for a, b in zip(model_correct, baseline_correct)]
-    estimates = sorted(sum(rng.choices(delta, k=len(delta))) / len(delta) for _ in range(samples))
+    n = len(delta)
+    estimates = sorted(sum(delta[rng.randrange(n)] for _ in range(n)) / n for _ in range(samples))
     return {
         "difference": statistics.mean(delta),
-        "ci95": [estimates[int(0.025 * (samples - 1))], estimates[int(0.975 * (samples - 1))]],
+        "ci95": [estimates[int(0.025 * samples)], estimates[max(int(0.975 * samples) - 1, 0)]],
         "samples": samples,
         "seed": seed,
         "unit": "example",

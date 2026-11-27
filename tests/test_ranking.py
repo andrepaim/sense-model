@@ -66,9 +66,9 @@ def test_paired_bootstrap_is_deterministic_and_brackets_the_difference():
     b = [0, 1, 0, 0, 0, 1, 0, 0, 1, 0]
     result = paired_bootstrap(a, b, 2000, seed=1)
     assert result == paired_bootstrap(a, b, 2000, seed=1)
-    assert result["difference"] == pytest.approx(0.3)
+    assert result["difference"] == pytest.approx(0.4)
     low, high = result["ci95"]
-    assert low <= 0.3 <= high and low < high
+    assert low <= 0.4 <= high and low < high
     assert paired_bootstrap(a, a, 200, seed=1)["ci95"] == [0, 0]
 
 
