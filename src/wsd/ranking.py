@@ -46,6 +46,13 @@ def outcome(item, form, scores):
     if score.get("type") != "scored" or not score.get("logits"):
         return dictionary, f"rejected:{score.get('code')}"
     values = score["logits"]
+    if len(values) != len(info["candidates"]) + 1:
+        raise ValueError(
+            f"{item['id']} ({form}): score has {len(values)} logits for {len(info['candidates'])} candidates "
+            "and none-fits; the score file does not fit these items"
+        )
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError(f"{item['id']} ({form}): logits are not finite")
     top = max(values)
     weights = [math.exp(v - top) for v in values]
     total = sum(weights)
@@ -83,6 +90,8 @@ def offered_accuracy(items, form, scores):
 
 
 def rank_report(items, forms, named_scores, baseline=None, samples=2000, seed=1):
+    if not items:
+        raise ValueError("No items to rank (empty item file, or every item excluded)")
     report = {"items": len(items)}
     first, top3, mean = summary([it["labelled"]["sense"] + 1 for it in items])
     report["dictionary"] = {"first": first, "top3": top3, "mean_rank": mean}
