@@ -102,3 +102,140 @@ def test_teacher_cache_from_scores_without_scoring_again(tmp_path):
     assert main(args)["scored"] == 0
     assert (tmp_path / "cache.jsonl").read_bytes() == first
     assert json.loads(first.splitlines()[0])["teacher_model"] == str(tmp_path / "teacher")
+
+
+def score_cli(*args):
+    from wsd.scoring import main
+
+    return main([str(a) for a in args])
+
+
+def saved(tmp_path, name, dtype=None, max_length=None):
+    p = tiny_predictor()
+    if dtype is not None:
+        p.model.to(dtype)
+    if max_length is not None:
+        p.metadata["max_length"] = max_length
+    p.save_pretrained(tmp_path / name)
+    return tmp_path / name
+
+
+def test_score_rows_record_the_model_and_a_mismatch_is_refused(tmp_path):
+    import pytest
+
+    a, b = saved(tmp_path, "a"), saved(tmp_path, "b")
+    write_jsonl(tmp_path / "in.jsonl", examples())
+    out = tmp_path / "scores.jsonl"
+    score_cli("--model", a, "--local-files-only", "--input", tmp_path / "in.jsonl", "--output", out)
+    row = json.loads(out.read_text().splitlines()[0])
+    assert row["model"] == str(a) and row["dtype"] == "float32" and row["max_length"] == 256 and "revision" in row
+    for other in (["--model", b], ["--model", a, "--dtype", "bfloat16"]):
+        with pytest.raises(ValueError, match="scored by another model"):
+            score_cli(*other, "--local-files-only", "--input", tmp_path / "in.jsonl", "--output", out)
+    shorter = saved(tmp_path, "short", max_length=128)
+    with pytest.raises(ValueError, match="scored by another model"):
+        score_cli("--model", shorter, "--local-files-only", "--input", tmp_path / "in.jsonl", "--output", out)
+
+
+def test_rows_without_a_recorded_model_need_an_explicit_identity(tmp_path):
+    import pytest
+
+    a = saved(tmp_path, "a")
+    write_jsonl(tmp_path / "in.jsonl", examples())
+    out = tmp_path / "scores.jsonl"
+    score_cli("--model", a, "--local-files-only", "--input", tmp_path / "in.jsonl", "--output", out)
+    old = [json.loads(line) for line in out.read_text().splitlines()]
+    identity = {k: old[0][k] for k in ("model", "revision", "dtype", "max_length")}
+    out.write_text("".join(json.dumps({k: v for k, v in r.items() if k not in identity}) + "\n" for r in old[:3]))
+    args = ["--model", a, "--local-files-only", "--input", tmp_path / "in.jsonl", "--output", out]
+    with pytest.raises(ValueError, match="no recorded model"):
+        score_cli(*args)
+    with pytest.raises(ValueError, match="scored by another model"):
+        score_cli(*args, "--untagged-scores", "other", identity["revision"], "float32", "256")
+    report = score_cli(*args, "--untagged-scores", a, identity["revision"], "float32", "256")
+    assert report["scored"] == 2 and report["total"] == 5
+
+
+def test_output_paths_must_not_clobber_inputs(tmp_path):
+    import pytest
+
+    from wsd.teacher import main as teacher
+
+    a = saved(tmp_path, "a")
+    write_jsonl(tmp_path / "in.jsonl", examples())
+    before = (tmp_path / "in.jsonl").read_bytes()
+    with pytest.raises(SystemExit):
+        score_cli(
+            "--model", a, "--local-files-only", "--input", tmp_path / "in.jsonl", "--output", tmp_path / "in.jsonl"
+        )
+    for extra in (
+        ["--scores", tmp_path / "x.jsonl", "--output", tmp_path / "x.jsonl"],
+        ["--output", tmp_path / "in.jsonl"],
+    ):
+        with pytest.raises(SystemExit):
+            teacher(["--model", str(a), "--local-files-only", "--input", str(tmp_path / "in.jsonl"), *map(str, extra)])
+    (tmp_path / "copy.jsonl").write_bytes(before)
+    with pytest.raises(ValueError, match="not a score file"):
+        score_cli(
+            "--model", a, "--local-files-only", "--input", tmp_path / "in.jsonl", "--output", tmp_path / "copy.jsonl"
+        )
+    assert (tmp_path / "in.jsonl").read_bytes() == before == (tmp_path / "copy.jsonl").read_bytes()
+
+
+def test_teacher_keeps_the_stored_dtype_and_refuses_too_long_prompts_unless_asked(tmp_path):
+    import pytest
+
+    from wsd.teacher import main as teacher
+
+    stored = saved(tmp_path, "bf16", dtype=torch.bfloat16)
+    write_jsonl(tmp_path / "in.jsonl", examples())
+    base = ["--model", str(stored), "--local-files-only", "--input", str(tmp_path / "in.jsonl")]
+    teacher([*base, "--scores", str(tmp_path / "s.jsonl"), "--output", str(tmp_path / "c.jsonl")])
+    assert {json.loads(line)["dtype"] for line in (tmp_path / "s.jsonl").read_text().splitlines()} == {"bfloat16"}
+    teacher([*base, "--dtype", "float32", "--scores", str(tmp_path / "f.jsonl"), "--output", str(tmp_path / "c.jsonl")])
+    assert {json.loads(line)["dtype"] for line in (tmp_path / "f.jsonl").read_text().splitlines()} == {"float32"}
+    p = tiny_predictor()
+    short = examples()[0]
+    tight = len(p.tokenizer(format_prompt(short, p.tokenizer, p.metadata))["input_ids"])
+    small = saved(tmp_path, "small", max_length=tight)
+    args = ["--model", str(small), "--local-files-only", "--input", str(tmp_path / "in.jsonl")]
+    with pytest.raises(ValueError, match="max_length"):
+        teacher([*args, "--output", str(tmp_path / "t.jsonl")])
+    report = teacher([*args, "--output", str(tmp_path / "t.jsonl"), "--skip-too-long"])
+    assert report["too_long"] == 4 and report["rows"] == 1
+
+
+def test_teacher_refuses_scores_of_another_model(tmp_path):
+    import pytest
+
+    from wsd.teacher import main as teacher
+
+    a, b = saved(tmp_path, "a"), saved(tmp_path, "b")
+    write_jsonl(tmp_path / "in.jsonl", examples())
+    teacher(["--model", str(a), "--local-files-only", "--input", str(tmp_path / "in.jsonl"),
+             "--scores", str(tmp_path / "s.jsonl"), "--output", str(tmp_path / "c.jsonl")])  # fmt: skip
+    with pytest.raises(ValueError, match="scored by another model"):
+        teacher(["--model", str(b), "--local-files-only", "--input", str(tmp_path / "in.jsonl"),
+                 "--scores", str(tmp_path / "s.jsonl"), "--output", str(tmp_path / "c.jsonl")])  # fmt: skip
+
+
+def test_every_prompt_of_a_batch_needs_exactly_one_mask(tmp_path):
+    p = tiny_predictor()
+    real = p.tokenizer
+
+    class TwoMasks:
+        """The tokenizer, with a second mask in the ids of the longest prompt (no Example can produce one)."""
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def __call__(self, text, *args, **kwargs):
+            out = real(text, *args, **kwargs)
+            if text.startswith("*bank* " + "bank " * 10):
+                out = {**out, "input_ids": [*out["input_ids"], real.mask_token_id]}
+            return out
+
+    p.tokenizer = TwoMasks()
+    rows = score_examples(p, examples(), None, max_batch=64)
+    kinds = {r["hash"]: (r["type"], r["code"]) for r in rows}
+    assert sorted(kinds.values()) == [("rejected", "MASK")] + [("scored", None)] * 4
