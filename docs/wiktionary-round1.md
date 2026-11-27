@@ -4,11 +4,11 @@ On 2026-11-25 and 26, `sign/Ettin-150m-WSD` was fine-tuned on English Wiktionary
 with `sign/Ettin-1B-WSD` as a teacher, for the Chrome extension
 [Contextual Dictionary](https://github.com/andrepaim/contextual-dictionary). The run that ships is published as
 [`andrepaim/Ettin-150m-WSD-wiktionary`](https://huggingface.co/andrepaim/Ettin-150m-WSD-wiktionary/tree/0edcbab04bb30eadeeef6babb26e8055b173b8d7)
-(revision `0edcbab04bb30eadeeef6babb26e8055b173b8d7`), and its INT8 graph is the extension's release `assets-v2`. It was first published at revision
-`affc67b9a87c51a07ce642726cee993c593ad744` (2026-11-26); `0edcbab0` (2026-11-27, `wsd publish` from this repository) has the same weights and ONNX
-graphs and adds the extension's `tokenizer.json`, the card of `releases/Ettin-150m-WSD-wiktionary/` and the run's
-records (`training_config.json`, `data_manifest.json`, `evaluation.json`). The
-training and evaluation data are the dataset
+(revision `0edcbab04bb30eadeeef6babb26e8055b173b8d7`), and its INT8 graph is the extension's release `assets-v2`.
+It was first published at revision `affc67b9a87c51a07ce642726cee993c593ad744` (2026-11-26); `0edcbab0` (2026-11-27,
+`wsd publish` from this repository) has the same weights and ONNX graphs and adds the extension's `tokenizer.json`,
+the card of `releases/Ettin-150m-WSD-wiktionary/` and the run's records (`training_config.json`, `data_manifest.json`,
+`evaluation.json`). The training and evaluation data are the dataset
 [`andrepaim/wiktionary-wsd`](https://huggingface.co/datasets/andrepaim/wiktionary-wsd/tree/84b6444e83219aaa76c29a517a64a640c1df9a46)
 (revision `84b6444e83219aaa76c29a517a64a640c1df9a46`).
 
@@ -201,14 +201,15 @@ curves stay on the maintainer's machine.
   (`validate_splits`, normalized passage equality and a five-word-shingle Jaccard of at least 0.8 for passages of 15
   words or more) finds 758 findings between the training files and the two development forms, 90 equal passages and
   668 near duplicates. They involve 232 of the 4,931 development items (451 development examples across the two forms)
-  and 317 training items (341 training examples): the same quotation filed under another headword. The 232
+  and 317 training items (341 training examples): the same quotation filed under another headword. The development
+  numbers may be somewhat optimistic; the choice between runs was made on them. The configurations set
+  `allow_split_overlap`, so a run records these findings in its `data_manifest.json` instead of stopping. The 232
   development item IDs are `reports/dev-train-overlap-items.txt` in the dataset's revision
   [`e1daff12f44efb55f74b236b492f755dcc04149b`](https://huggingface.co/datasets/andrepaim/wiktionary-wsd/tree/e1daff12f44efb55f74b236b492f755dcc04149b),
-  which changes only the dataset's card and scripts and adds that list (every data file is byte for byte the one of
-  `84b6444e`, the revision the configurations pin); give it to `wsd rank --exclude` together with
-  `reports/excluded-overlap-ids.txt` to count development without them. The development numbers may be somewhat optimistic; the choice between runs was made on them. The
-  configurations set `allow_split_overlap`, so a run records these findings in its `data_manifest.json` instead of
-  stopping.
+  which changes only the dataset's card and scripts and adds that list; every data file is byte for byte the one of
+  `84b6444e`, the revision the configurations pin. To count development without them, join the two lists for
+  `wsd rank --exclude`, which takes one file:
+  `cat $DATA/reports/excluded-overlap-ids.txt dev-train-overlap-items.txt > exclude.txt`.
 - One seed per run, one machine.
 
 ## Rerun
