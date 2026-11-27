@@ -17,7 +17,9 @@ uv run pytest
 
 The lock defaults to CPU PyTorch. For GPU training use a separate environment with
 a CUDA PyTorch wheel appropriate for the machine (`uv pip install` with the
-PyTorch CUDA index), then install this package with training extras. Never install
+PyTorch CUDA index), then install this package with training extras
+(`docs/wiktionary-round1-requirements.txt` is one such environment, frozen).
+TensorBoard logging (`wsd train --report-to tensorboard`) needs the `tensorboard` extra. Never install
 this project from the sibling upstream directory: both packages use `wsd`.
 
 ## Predict
@@ -68,6 +70,12 @@ uv run wsd publish --help
 See [data preparation](docs/data.md), [training](docs/training.md),
 [evaluation](docs/evaluation.md), [release/export](docs/releasing.md), and
 [implementation status](docs/status.md) and [Portuguese training smoke receipt](docs/portuguese-smoke.md). Configuration examples live in `configs`.
+
+[Wiktionary round 1](docs/wiktionary-round1.md) fine-tuned `sign/Ettin-150m-WSD` on English Wiktionary for the
+Contextual Dictionary extension: method, numbers and the rerun with these commands, from the dataset
+[`andrepaim/wiktionary-wsd`](https://huggingface.co/datasets/andrepaim/wiktionary-wsd) to the published model
+[`andrepaim/Ettin-150m-WSD-wiktionary`](https://huggingface.co/andrepaim/Ettin-150m-WSD-wiktionary). Its CUDA
+environment is recorded in [`docs/wiktionary-round1-requirements.txt`](docs/wiktionary-round1-requirements.txt).
 Small authored smoke examples are tests of software mechanics, not a benchmark.
 
 ## Build and review an automatic dataset

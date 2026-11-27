@@ -20,6 +20,19 @@ Marked precision and coverage describe actual `selected` decisions. False-confid
 
 Paired bootstrap confidence intervals resample model/baseline outcomes on the same examples, deterministically. They use example-level resampling, which can understate uncertainty when many examples share a document; report that limitation and use a document bootstrap in a publication requiring clustered inference. `--permutations` measures changes in final decisions when candidate order is shuffled with a fixed seed.
 
+## Score files and ranks within dictionary entries
+
+`wsd score --model M --input A.jsonl [B.jsonl ...] --output scores.jsonl` writes one row per distinct prompt: its SHA-256 (`hash`), the logits of the offered candidates in order and then none-fits, the token count, and `type` `scored` or `rejected` (`TOO_LONG` over the model's `max_length`). It batches like `wsd teacher` (`--max-tokens`, `--batch-size`, `--dtype`, default float32, `--device`), appends, and resumes. Every row records the scorer's identity: `model` as given, `revision` (the model's `model_revision`), `dtype` and `max_length`; resuming into a file scored with another identity, or into a file that is not a score file, is refused, and `--output` may not be an input. Rows without an identity (score files written before it was recorded, such as those of the Wiktionary round) are accepted only with `--untagged-scores MODEL REVISION DTYPE MAX_LENGTH`, which states what they are and must match the model being run. `wsd rank` reads score files without these checks: it compares the files it is given. It refuses a score whose logits do not match its item's candidates or are not finite, and an empty set of items. An application that builds the same compact-v1 prompts can join the rows with its own records by that hash.
+
+`wsd rank` measures what an application that lists a word's meanings in dictionary order, grouped by entry, shows when it reorders the meanings it offered the model: the rank of the labelled meaning within its entry. A skipped, missing or rejected prompt, or a none-fits probability at least that of every offered meaning, leaves dictionary order; a labelled meaning the prompt did not offer comes after the offered meanings of its entry. It reads item files (one JSON object per labelled item: `id`, `labelled` `{entry, sense}`, `entrySenses`, `meanings`, and `perCap` `{form: {prompt, candidates, labelledOffered, skip}}`, the files contextual-dictionary writes) and score files, and reports for each form and model first, top three, mean rank, the outcome counts, the trainer's `offered` accuracy, strata by meanings in the entry, and with `--baseline NAME` paired bootstrap intervals of "first" against that model:
+
+```sh
+wsd rank --items items.jsonl --forms '24|c1600' 127 --exclude excluded-ids.txt \
+  --scores base=base.jsonl tuned=tuned.jsonl --baseline base --output rank.json
+```
+
+The paired bootstrap of `wsd rank` and `wsd evaluate` resamples items with `random.Random(seed).randrange` (2,000 resamples; `wsd rank` uses seed 1, `wsd evaluate` seed 42) and takes the 2.5th and 97.5th percentiles at indices int(0.025 R) and int(0.975 R) − 1. This is the procedure of the Wiktionary round's published intervals; `wsd evaluate`'s intervals made before it used `random.choices` and differ slightly.
+
 ## Calibration
 
 Fit on a dedicated split, never the test set:

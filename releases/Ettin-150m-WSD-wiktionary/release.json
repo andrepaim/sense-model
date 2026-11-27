@@ -1,0 +1,33 @@
+{
+  "card": "README.md",
+  "license": "LICENSE",
+  "notice": "NOTICE",
+  "files": [
+    "model.safetensors",
+    "config.json",
+    "tokenizer.json",
+    "calibration.json",
+    "onnx/model.onnx",
+    "onnx/model.int8.onnx"
+  ],
+  "release_files": {
+    "tokenizer_config.json": "tokenizer_config.json"
+  },
+  "recipe": {
+    "to": "onnx/recipe.json",
+    "model": "model.safetensors (this repository)"
+  },
+  "metadata": {
+    "model_revision": "weights",
+    "base_model": "sign/Ettin-150m-WSD",
+    "base_revision": "8751b577199d1bb95b74fa2457da7065d57100ae",
+    "training": {
+      "round": "contextual-dictionary training round 1, run s2-labels-teacher (docs/validation.md)",
+      "labels": "English Wiktionary usage examples and quotations with the meaning their editors attached them to, Kaikki.org extract of 2026-10-30",
+      "teacher": "sign/Ettin-1B-WSD revision e6fc37a7e11fee91a600a0cd8e7423bcc639a1cc, soft labels at temperature 2 on those examples and on English Wikipedia paragraphs (wikimedia/wikipedia 20231101.en, file train-00001-of-00041, revision b04c8d1ceb2f5cd4588862100d08de323dccfbaa)",
+      "loss": "0.3 label cross-entropy (label smoothing 0.1) + 0.7 x T^2 x KL to the teacher, T = 2; learning rate 5e-5 (cosine), batch 64, seed 42",
+      "steps": "planned 3 epochs (8,715 steps); early stopping on development accuracy (patience 4 evaluations of 300 steps) ended it at step 4,200; this is the step-3,000 checkpoint (1.03 epochs), the best on development"
+    }
+  },
+  "training_config": "../../configs/wiktionary_round1_labels_teacher.json"
+}

@@ -54,6 +54,16 @@ def decode(example, logits, metadata):
     return result
 
 
+def save_tokenizer(tokenizer, path):
+    """Save the tokenizer without the batch padding state that encoding with padding=True leaves on the fast
+    tokenizer's backend; otherwise tokenizer.json gains a "padding" block that its source file does not have.
+    Token ids are unaffected: every call that pads sets padding again."""
+    backend = getattr(tokenizer, "_tokenizer", None)
+    if backend is not None and getattr(backend, "padding", None) is not None:
+        backend.no_padding()
+    tokenizer.save_pretrained(path)
+
+
 def validate_metadata(metadata, tokenizer, max_position_embeddings=None):
     if metadata.get("template_version") != "compact-v1":
         raise ValueError("unsupported prompt template_version")
@@ -175,7 +185,7 @@ class Predictor:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         self.model.save_pretrained(path, safe_serialization=True)
-        self.tokenizer.save_pretrained(path)
+        save_tokenizer(self.tokenizer, path)
         (path / "model_metadata.json").write_text(
             json.dumps(self.metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )

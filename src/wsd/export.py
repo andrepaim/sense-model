@@ -22,12 +22,26 @@ class ExportModel(torch.nn.Module):
         ).logits
 
 
-def export_model(predictor, examples, output: Path, *, quantize=False, atol=1e-4, rtol=1e-3, max_accuracy_loss=0.01):
+def export_model(
+    predictor,
+    examples,
+    output: Path,
+    *,
+    quantize=False,
+    atol=1e-4,
+    rtol=1e-3,
+    max_accuracy_loss=0.01,
+    per_channel=False,
+    exclude_nodes=(),
+    float16_embedding=False,
+):
     """Export and check every fixture singly and together (variable batch/sequence sizes).
 
     Quantized parity reports probability drift and decision agreement. A quantized
     artifact is rejected if its labelled accuracy drops by more than the budget.
     Fixtures are a mechanical check, not a substitute for a full release evaluation.
+    ``per_channel`` quantizes MatMul weights per output channel, ``exclude_nodes`` names MatMul nodes that stay in
+    float, and ``float16_embedding`` stores the token embedding in float16 with a Cast back to float.
     """
     import onnxruntime as ort
 
@@ -93,10 +107,27 @@ def export_model(predictor, examples, output: Path, *, quantize=False, atol=1e-4
             "expected_predictions": predictor.predict(examples),
         }
         if quantize:
+            import onnx
             from onnxruntime.quantization import QuantType, quantize_dynamic
 
             target = graph.with_name("model.int8.onnx")
-            quantize_dynamic(str(graph), str(target), weight_type=QuantType.QInt8, op_types_to_quantize=["MatMul"])
+            names = {n.name for n in onnx.load(str(graph), load_external_data=False).graph.node}
+            missing = [name for name in exclude_nodes if name not in names]
+            if missing:
+                raise ValueError(f"Node names not in the graph: {missing}")
+            # The float16 embedding is written in a second pass over the quantized graph, as training round 1 did.
+            quantized = graph.with_name("model.pc-int8.onnx") if float16_embedding else target
+            quantize_dynamic(
+                str(graph),
+                str(quantized),
+                weight_type=QuantType.QInt8,
+                op_types_to_quantize=["MatMul"],
+                per_channel=per_channel,
+                nodes_to_exclude=list(exclude_nodes),
+            )
+            if float16_embedding:
+                store_embedding_float16(quantized, target)
+                quantized.unlink()
             quant_session = ort.InferenceSession(str(target), providers=["CPUExecutionProvider"])
             actual = quant_session.run(["logits"], {k: batch[k].numpy() for k in inputs})[0]
             original = decisions(reference_logits, examples, predictor.metadata)
@@ -114,6 +145,9 @@ def export_model(predictor, examples, output: Path, *, quantize=False, atol=1e-4
                 "labelled_accuracy_loss": loss if labeled else None,
                 "max_logit_error": float(np.max(np.abs(reference_logits - actual))),
                 "requires_full_evaluation": True,
+                "per_channel": per_channel,
+                "excluded_nodes": list(exclude_nodes),
+                "float16_embedding": float16_embedding,
             }
         (output / "parity.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return report
@@ -145,6 +179,126 @@ def decisions(logits, examples, metadata):
         else:
             selected.append(example.candidates[best].id)
     return selected
+
+
+EMBEDDING = "model.model.embeddings.tok_embeddings.weight"
+
+
+def store_embedding_float16(source, target, name=EMBEDDING):
+    """Store the token embedding of an ONNX graph in float16, with a Cast to float as the graph's first node."""
+    import onnx
+    from onnx import helper, numpy_helper
+
+    model = onnx.load(str(source))
+    graph = model.graph
+    initializer = next(i for i in graph.initializer if i.name == name)
+    half = numpy_helper.from_array(numpy_helper.to_array(initializer).astype(np.float16), name + "_fp16")
+    graph.initializer.remove(initializer)
+    graph.initializer.append(half)
+    graph.node.insert(0, helper.make_node("Cast", [half.name], [name], to=onnx.TensorProto.FLOAT, name=name + "_cast"))
+    onnx.save(model, str(target))
+
+
+def first_prompts(examples, tokenizer, metadata, count):
+    """One example per distinct prompt, the first ``count`` prompts in order of their SHA-256."""
+    from wsd.scoring import prompt_sha256
+
+    by_hash = {}
+    for example in examples:
+        by_hash.setdefault(prompt_sha256(example, tokenizer, metadata), example)
+    return [by_hash[h] for h in sorted(by_hash)[:count]]
+
+
+def activation_outliers(predictor, examples, count=200, device="cpu"):
+    """Input statistics of every nn.Linear over the first ``count`` prompts (one at a time, float32): the mean and
+    maximum over prompts of max |x|, and the mean over prompts of max |x| divided by its 99.9th percentile (taken
+    over the first 2,000,000 values of |x|), as training round 1 measured them (act_stats_model.py)."""
+    from collections import defaultdict
+
+    from wsd.tokenizer import encode_examples
+
+    model = predictor.model.to(device).float().eval()
+    names = {module: name for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)}
+    stats = defaultdict(lambda: defaultdict(list))
+
+    def hook(module, inputs, output):
+        x = inputs[0].detach().float().reshape(-1)
+        s = stats[names[module]]
+        s["max"].append(x.abs().max().item())
+        s["outlier"].append((x.abs().max() / torch.quantile(x.abs()[:2_000_000], 0.999).clamp_min(1e-9)).item())
+
+    handles = [module.register_forward_hook(hook) for module in names]
+    try:
+        with torch.inference_mode():
+            for example in first_prompts(examples, predictor.tokenizer, predictor.metadata, count):
+                batch = encode_examples([example], predictor.tokenizer, predictor.metadata)
+                model(**{k: v.to(device) for k, v in batch.items()})
+    finally:
+        for handle in handles:
+            handle.remove()
+    rows = []
+    for name in names.values():
+        s = stats[name]
+        rows.append(
+            {
+                "name": name,
+                "act_max_mean": sum(s["max"]) / len(s["max"]),
+                "act_max_max": max(s["max"]),
+                "outlier_ratio": sum(s["outlier"]) / len(s["outlier"]),
+            }
+        )
+    return rows
+
+
+def outlier_layers(rows, ratio=15.0):
+    """Layers whose feed-forward output (mlp.Wo) input peaks above ``ratio`` times its 99.9th percentile."""
+    return sorted(
+        int(r["name"].split(".")[-3]) for r in rows if r["name"].endswith("mlp.Wo") and r["outlier_ratio"] > ratio
+    )
+
+
+def outlier_nodes(layers):
+    return [f"/model/model/layers.{i}/mlp/Wo/MatMul" for i in layers]
+
+
+def compare_graphs(reference, candidate, examples, tokenizer, metadata, threads=16):
+    """Score each prompt alone with two ONNX graphs on the CPU and compare: the same top choice (offered candidates
+    and none-fits), the same set of the three best offered candidates, and the logit error after removing each
+    prompt's mean (order depends only on differences). The measures of screen.py in training round 1."""
+    import onnxruntime as ort
+
+    from wsd.tokenizer import encode_examples
+
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = threads
+    sessions = [
+        ort.InferenceSession(str(g), options, providers=["CPUExecutionProvider"]) for g in (reference, candidate)
+    ]
+    nota = metadata.get("nota_index", 127)
+    top = top3 = 0
+    errors, largest = [], []
+    for example in examples:
+        feed = {k: v.numpy() for k, v in encode_examples([example], tokenizer, metadata).items()}
+        r, c = (
+            np.array([*row[: len(example.candidates)], row[nota]], dtype=np.float64)
+            for row in (s.run(["logits"], feed)[0][0] for s in sessions)
+        )
+        top += int(r.argmax() == c.argmax())
+        k = min(3, len(r) - 1)
+        top3 += int(set(np.argsort(-r[:-1])[:k]) == set(np.argsort(-c[:-1])[:k]))
+        d = (c - c.mean()) - (r - r.mean())
+        errors.append(float(np.sqrt(np.mean(d**2))))
+        largest.append(float(np.abs(d).max()))
+    n = len(examples)
+    return {
+        "n": n,
+        "top1_agree": top / n,
+        "top3_set_agree": top3 / n,
+        "rmse_median": float(np.median(errors)),
+        "rmse_mean": float(np.mean(errors)),
+        "maxerr_p90": float(np.percentile(largest, 90)),
+        "threads": threads,
+    }
 
 
 class ONNXPredictor:
@@ -201,6 +355,8 @@ class ONNXPredictor:
 
 
 def main(argv=None):
+    import gzip
+
     from wsd.data import read_jsonl
     from wsd.predict import Predictor
 
@@ -213,12 +369,80 @@ def main(argv=None):
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--atol", type=float, default=1e-4)
     parser.add_argument("--rtol", type=float, default=1e-3)
-    args = parser.parse_args(argv)
-    predictor = Predictor.from_pretrained(args.model, revision=args.revision, local_files_only=args.local_files_only)
-    report = export_model(
-        predictor, read_jsonl(args.fixtures), args.output, quantize=args.quantize, atol=args.atol, rtol=args.rtol
+    parser.add_argument("--max-accuracy-loss", type=float, default=0.01, help="INT8 labelled fixture accuracy budget")
+    parser.add_argument("--per-channel", action="store_true", help="INT8 MatMul weights per output channel")
+    parser.add_argument(
+        "--float16-embedding", action="store_true", help="Store the token embedding in float16 with a Cast"
     )
-    print(json.dumps({k: v for k, v in report.items() if k in ("float_parity", "int8")}, indent=2))
+    parser.add_argument(
+        "--outlier-examples", nargs="+", type=Path, help="Measure activation outliers on these examples' prompts"
+    )
+    parser.add_argument("--outlier-count", type=int, default=200, help="First N distinct prompts by SHA-256")
+    parser.add_argument("--outlier-ratio", type=float, default=15.0, help="Keep mlp.Wo in float above this ratio")
+    parser.add_argument("--outlier-device", default="cpu")
+    parser.add_argument("--check-examples", nargs="+", type=Path, help="Compare INT8 with float on these prompts")
+    parser.add_argument("--check-count", type=int, default=1000, help="First N distinct prompts by SHA-256")
+    parser.add_argument("--check-threads", type=int, default=16)
+    args = parser.parse_args(argv)
+    if (args.outlier_examples or args.per_channel or args.float16_embedding or args.check_examples) and not (
+        args.quantize
+    ):
+        parser.error("the quantization options need --quantize")
+    predictor = Predictor.from_pretrained(args.model, revision=args.revision, local_files_only=args.local_files_only)
+    stats, layers = None, []
+    if args.outlier_examples:
+        examples = [example for path in args.outlier_examples for example in read_jsonl(path)]
+        stats = activation_outliers(predictor, examples, args.outlier_count, args.outlier_device)
+        layers = outlier_layers(stats, args.outlier_ratio)
+    report = export_model(
+        predictor,
+        read_jsonl(args.fixtures),
+        args.output,
+        quantize=args.quantize,
+        atol=args.atol,
+        rtol=args.rtol,
+        max_accuracy_loss=args.max_accuracy_loss,
+        per_channel=args.per_channel,
+        exclude_nodes=outlier_nodes(layers),
+        float16_embedding=args.float16_embedding,
+    )
+    if stats is not None:
+        (args.output / "activation-stats.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in stats), encoding="utf-8"
+        )
+    if args.quantize and (stats is not None or args.per_channel or args.float16_embedding):
+        data = (args.output / "onnx" / "model.int8.onnx").read_bytes()
+        recipe = {"model": args.model}
+        if stats is not None:
+            recipe.update(
+                outlier_rule=f"mlp.Wo input max/p99.9 > {args.outlier_ratio}",
+                outlier_layers=layers,
+                excluded_nodes=outlier_nodes(layers),
+            )
+        recipe["quantize_dynamic"] = {
+            "weight_type": "QInt8",
+            "per_channel": args.per_channel,
+            "op_types_to_quantize": ["MatMul"],
+        }
+        if args.float16_embedding:
+            recipe["token_embedding"] = "float16 + Cast"
+        recipe.update(stored_bytes=len(data), gzip6_bytes=len(gzip.compress(data, 6)))
+        (args.output / "recipe.json").write_text(json.dumps(recipe, indent=1), encoding="utf-8")
+    if args.check_examples:
+        examples = [example for path in args.check_examples for example in read_jsonl(path)]
+        chosen = first_prompts(examples, predictor.tokenizer, predictor.metadata, args.check_count)
+        onnx_dir = args.output / "onnx"
+        check = compare_graphs(
+            onnx_dir / "model.onnx",
+            onnx_dir / "model.int8.onnx",
+            chosen,
+            predictor.tokenizer,
+            predictor.metadata,
+            args.check_threads,
+        )
+        (args.output / "int8-check.json").write_text(json.dumps(check, indent=2) + "\n", encoding="utf-8")
+        report["int8_check"] = check
+    print(json.dumps({k: v for k, v in report.items() if k in ("float_parity", "int8", "int8_check")}, indent=2))
 
 
 if __name__ == "__main__":
