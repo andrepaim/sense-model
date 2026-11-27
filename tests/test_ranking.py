@@ -107,3 +107,26 @@ def test_rank_command_reports_forms_models_and_intervals(tmp_path, capsys):
     assert json.loads((tmp_path / "report.json").read_text()) == report
     printed = capsys.readouterr().out
     assert "| good | 100.0% |" in printed and "+50.0" in printed
+
+
+def test_paired_bootstrap_reproduces_the_published_procedure():
+    # Values from compare.py of training round 1 (contextual-dictionary), the procedure of its published intervals.
+    a = [int((i * 7) % 3 != 0) for i in range(57)]
+    b = [int((i * 5) % 4 == 0) for i in range(57)]
+    assert paired_bootstrap(a, b, 2000, seed=1)["ci95"] == [0.24561403508771928, 0.5614035087719298]
+    assert paired_bootstrap(a, b, 500, seed=7)["ci95"] == [0.24561403508771928, 0.5789473684210527]
+
+
+def test_a_score_that_does_not_fit_its_prompt_is_reported():
+    it = item("bad", 2, [4], [[0, 0], [0, 2]])
+    with pytest.raises(ValueError, match="bad.*2 logits for 2 candidates"):
+        outcome(it, "24|c1600", {"p1": scored([1.0, 2.0])})
+    with pytest.raises(ValueError, match="bad.*not finite"):
+        outcome(it, "24|c1600", {"p1": scored([float("nan"), 1.0, 0.0])})
+
+
+def test_ranking_no_items_is_an_error():
+    from wsd.ranking import rank_report
+
+    with pytest.raises(ValueError, match="No items"):
+        rank_report([], ["24|c1600"], {"m": {}})
