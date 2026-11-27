@@ -161,7 +161,7 @@ def assemble_release(release, artifact, *, export=None, training_config=None, da
             recipe["model"] = config["recipe"]["model"]
         target = artifact / config["recipe"].get("to", "onnx/recipe.json")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(recipe, indent=1), encoding="utf-8")
+        target.write_text(json.dumps(recipe, indent=1) + "\n", encoding="utf-8")
     metadata = json.loads((export / "model_metadata.json").read_text(encoding="utf-8"))
     metadata.pop("export", None)
     for key, value in config.get("metadata", {}).items():
