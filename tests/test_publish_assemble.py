@@ -35,6 +35,7 @@ def release_file(tmp_path):
     (folder / "README.md").write_text(CARD)
     (folder / "LICENSE").write_text("Synthetic licence text for a test.")
     (folder / "NOTICE").write_text("Synthetic notice for a test.")
+    (folder / "calibration.json").write_text('{"temperature": 1.0, "version": "release copy"}')
     release = {
         "card": "README.md",
         "license": "LICENSE",
@@ -42,6 +43,7 @@ def release_file(tmp_path):
         "files": ["model.safetensors", "config.json", "tokenizer.json", "tokenizer_config.json", "calibration.json"]
         + ["onnx/model.onnx", "onnx/model.int8.onnx"],
         "recipe": {"to": "onnx/recipe.json", "model": "model.safetensors (this repository)"},
+        "release_files": {"calibration.json": "calibration.json"},
         "metadata": {
             "model_revision": "weights",
             "base_model": "local/tiny-test",
@@ -88,6 +90,8 @@ def test_assemble_builds_the_repository_layout(tmp_path):
         ]
     )
     assert (out / "onnx" / "model.int8.onnx").read_bytes() == (export / "onnx" / "model.int8.onnx").read_bytes()
+    # A file of the release folder takes the place of the export's copy.
+    assert json.loads((out / "calibration.json").read_text())["version"] == "release copy"
     meta = json.loads((out / "model_metadata.json").read_text())
     weights = hashlib.sha256((out / "model.safetensors").read_bytes()).hexdigest()
     assert meta["model_revision"] == "sha256:" + weights
