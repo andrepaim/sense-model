@@ -1,5 +1,8 @@
 # Improvement protocol
 
+Rounds so far: [Wiktionary round 1](wiktionary-round1.md) (English, `sign/Ettin-150m-WSD` fine-tuned on English
+Wiktionary with `sign/Ettin-1B-WSD` as teacher; published as `andrepaim/Ettin-150m-WSD-wiktionary`).
+
 Preserve English checkpoint 8751b577199d1bb95b74fa2457da7065d57100ae as the
 reference. Keep fixed development, calibration and frozen test inventories.
 The authored six-record fixture is not a quality benchmark.
