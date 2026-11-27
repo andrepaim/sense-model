@@ -110,7 +110,8 @@ def test_rank_command_reports_forms_models_and_intervals(tmp_path, capsys):
 
 
 def test_paired_bootstrap_reproduces_the_published_procedure():
-    # Values from compare.py of training round 1 (contextual-dictionary), the procedure of its published intervals.
+    # Values from compare.py of training round 1 (contextual-dictionary validation/training/ at 6cdc449), the procedure
+    # of its published intervals.
     a = [int((i * 7) % 3 != 0) for i in range(57)]
     b = [int((i * 5) % 4 == 0) for i in range(57)]
     assert paired_bootstrap(a, b, 2000, seed=1)["ci95"] == [0.24561403508771928, 0.5614035087719298]
