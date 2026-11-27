@@ -120,7 +120,8 @@ def assemble_release(release, artifact, *, export=None, training_config=None, da
     """Build the folder of a model repository from an export and a release file (JSON).
 
     The release file names, relative to itself, the model card (``card``), ``license`` and ``notice``; it lists the
-    ``files`` copied from the export folder; ``recipe`` copies the export's recipe.json to ``to`` with its ``model``
+    ``files`` copied from the export folder, and ``release_files`` (name -> path) copied from the release's own
+    folder in their place; ``recipe`` copies the export's recipe.json to ``to`` with its ``model``
     field replaced; ``metadata`` updates the export's model_metadata.json (``model_revision: "weights"`` means
     "sha256:" + the SHA-256 of model.safetensors) and an ``export`` block made from the recipe is added last. The
     run's training configuration, data manifest and evaluation reports (a mapping name -> file, merged into
@@ -149,6 +150,8 @@ def assemble_release(release, artifact, *, export=None, training_config=None, da
     for name in config["files"]:
         (artifact / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(export / name, artifact / name)
+    for name, path in config.get("release_files", {}).items():
+        shutil.copyfile(source(path, None), artifact / name)
     for key, name in (("card", "README.md"), ("license", "LICENSE"), ("notice", "NOTICE")):
         shutil.copyfile(source(config[key], None), artifact / name)
     recipe = None
